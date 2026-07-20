@@ -549,6 +549,87 @@ def test_acceptance_rerun_v2_same_physical_image_emits_one_auditable_receipt():
     }.items()) <= set(receipt["audit_fields"].items())
 
 
+def test_same_physical_image_with_weaker_runtime_duplicate_keeps_actionable_receipt():
+    backend = _backend()
+    content_bytes = b"same physical synthetic receipt bytes"
+    full_receipt = {
+        "receipts": [
+            {
+                "receipt_discriminator": "restaurante demo folio DEMO-81353 full",
+                "page_metadata": {"page_range": [1, 1], "group_label": "boleta 1"},
+                "campos_extraidos": {
+                    "proveedor": {"valor": "RESTAURANTE DEMO POMPEYO", "confianza": 99, "pagina": 1},
+                    "folio": {"valor": "DEMO-81353", "confianza": 99, "pagina": 1},
+                    "fecha": {"valor": "2026-07-20", "confianza": 99, "pagina": 1},
+                    "monto_total": {"valor": "$18.750", "confianza": 99, "pagina": 1},
+                    "categoria": {
+                        "valor": {
+                            "id": "SIM-ALIMENTACION-81353",
+                            "name": "ALIMENTACIÓN",
+                            "confidence": 0.99,
+                        },
+                        "confianza": 99,
+                        "pagina": 1,
+                    },
+                },
+                "extraction_confidence": 99,
+            }
+        ]
+    }
+    weaker_duplicate = {
+        "receipts": [
+            {
+                "receipt_discriminator": "restaurante demo folio DEMO-81353 weak duplicate",
+                "page_metadata": {"page_range": [1, 1], "group_label": "boleta 1"},
+                "campos_extraidos": {
+                    "proveedor": {"valor": "RESTAURANTE DEMO POMPEYO", "confianza": 70, "pagina": 1},
+                    "folio": {"valor": "DEMO-81353", "confianza": 70, "pagina": 1},
+                    "fecha": {"valor": "2026-07-20", "confianza": 70, "pagina": 1},
+                },
+                "extraction_confidence": 70,
+            }
+        ]
+    }
+    catalog = backend._parse_category_catalog_snapshot({
+        "version": "simulation-81353",
+        "source": "synthetic_simulation_only",
+        "categories": [
+            {"id": "SIM-ALIMENTACION-81353", "name": "ALIMENTACIÓN", "keywords": ["ALIMENTACIÓN"]},
+        ],
+    })
+
+    artifact = backend._build_receipt_batch_artifact(
+        {
+            "runtime-weak": json.dumps(weaker_duplicate, ensure_ascii=False),
+            "runtime-full": json.dumps(full_receipt, ensure_ascii=False),
+        },
+        [],
+        [
+            {
+                **_file(uuid="runtime-weak", name="synthetic_receipt_demo_81353.png", mime="image/png"),
+                "content_bytes": content_bytes,
+            },
+            {
+                **_file(uuid="runtime-full", name="synthetic_receipt_demo_81353.png", mime="image/png"),
+                "content_bytes": content_bytes,
+            },
+        ],
+        [],
+        [],
+        catalog,
+    )
+
+    assert artifact["batch"]["processed_count"] == 2
+    assert len(artifact["receipts"]) == 1
+    receipt = artifact["receipts"][0]
+    assert receipt["source"]["file_uuid"] == "runtime-full"
+    assert receipt["proposed_amount"]["numeric_value"] == 18750
+    assert receipt["expense_category"]["id"] == "SIM-ALIMENTACION-81353"
+    assert receipt["provider"] == "RESTAURANTE DEMO POMPEYO"
+    assert receipt["folio"] == "DEMO-81353"
+    assert receipt["date"] == "2026-07-20"
+
+
 def test_plain_text_total_fallback_requires_total_label_and_currency_context():
     backend = _backend()
     raw_text = """
