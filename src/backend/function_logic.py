@@ -2022,7 +2022,7 @@ class FunctionBackend:
         response = files_api_manager.call(
             "upload_file",
             file=file_obj,
-            orchestration_session_uuid=self.orchestration_event.orchestration_session_uuid,
+            orchestration_session_uuids=[self.orchestration_event.orchestration_session_uuid],
             internal_orchestration_session_uuid=self.orchestration_event.internal_orchestration_session_uuid,
             access_token=self.orchestration_event.access_token,
             organization_id=self.orchestration_event.organization.organization_id,
