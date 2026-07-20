@@ -332,6 +332,9 @@ def test_upload_returns_ready_receipts_uuid_and_payload_metadata(monkeypatch):
     class UploadManager:
         def call(self, name, **kwargs):
             assert name == "upload_file"
+            assert "orchestration_session_uuid" not in kwargs
+            assert kwargs["orchestration_session_uuids"] == ["session-uuid"]
+            assert kwargs["internal_orchestration_session_uuid"] == "internal-session-uuid"
             uploaded["filename"] = kwargs["file"].name
             uploaded["content"] = kwargs["file"].getvalue()
             return {"file_uuid": "ready-uuid"}
@@ -352,6 +355,8 @@ def test_final_response_returns_uuid_not_inline_artifact(monkeypatch):
 
     class UploadManager:
         def call(self, name, **kwargs):
+            assert name == "upload_file"
+            assert kwargs["orchestration_session_uuids"] == ["session-uuid"]
             return {"file_uuid": "ready-uuid"}
 
     monkeypatch.setattr(function_logic, "files_api_manager", UploadManager())
