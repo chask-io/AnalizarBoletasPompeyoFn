@@ -1719,6 +1719,38 @@ class FunctionBackend:
             }
         return source
 
+    def _canonical_receipt_date_value(self, value: Any) -> Any:
+        if not isinstance(value, str):
+            return value
+        text = value.strip()
+        if not text:
+            return value
+
+        iso = re.fullmatch(r"(\d{4})-(\d{2})-(\d{2})", text)
+        if iso:
+            year, month, day = (int(part) for part in iso.groups())
+            try:
+                return datetime(year, month, day).date().isoformat()
+            except ValueError:
+                return value
+
+        chilean = re.fullmatch(r"(\d{1,2})[-/](\d{1,2})[-/](\d{4})", text)
+        if not chilean:
+            return value
+        day, month, year = (int(part) for part in chilean.groups())
+        if day <= 12 and month <= 12:
+            return value
+        try:
+            return datetime(year, month, day).date().isoformat()
+        except ValueError:
+            return value
+
+    def _canonical_receipt_contract_value(self, field_name: str, value: Any) -> Any:
+        normalized_name = self._strip_accents_casefold(str(field_name))
+        if normalized_name in {"date", "fecha", "fecha_emision"}:
+            return self._canonical_receipt_date_value(value)
+        return value
+
     def _iter_extracted_fields(self, parsed: Optional[dict], file_record: dict):
         if not parsed:
             return
@@ -1733,6 +1765,7 @@ class FunctionBackend:
                 else:
                     value = field_data
                     confidence = None
+                value = self._canonical_receipt_contract_value(field_name, value)
                 yield field_name, field_data, {
                     "field": field_name,
                     "value": self._redact_secret_values(value),
@@ -1757,6 +1790,7 @@ class FunctionBackend:
             value = self._field_value_for_aliases(parsed, aliases)
             if value in (None, ""):
                 continue
+            value = self._canonical_receipt_contract_value(field_name, value)
             confidence = parsed.get("confidence") or parsed.get("extraction_confidence")
             field_data = {"valor": value, "confianza": confidence}
             yield field_name, field_data, {
@@ -2118,6 +2152,7 @@ class FunctionBackend:
         ):
             value = self._field_value_for_aliases(receipt_item, aliases)
             if value not in (None, ""):
+                value = self._canonical_receipt_contract_value(canonical_name, value)
                 audit[canonical_name] = self._redact_secret_values(value)
         if "currency" not in audit:
             for amount_key in ("monto", "amount", "monto_total", "total", "proposed_amount"):
