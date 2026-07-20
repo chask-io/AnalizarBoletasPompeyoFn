@@ -51,6 +51,10 @@ function:
         type: string
         description: "ID del nodo del pipeline para sumar contexto descriptivo del requerimiento."
 
+      - name: category_catalog_snapshot
+        type: string
+        description: "Snapshot JSON versionado de categorías ROMA descubierto por lectura segura. Si falta o es inválido, las categorías quedan unresolved/ambiguous sin IDs inventados."
+
   # Widget configuration (optional - for UI integration)
   # Enable this to allow users to configure secrets and settings via the Chask UI
   widget:
@@ -77,7 +81,7 @@ function:
   # knows which of the 4 mandatory test types to require.
   testing:
     handles_files: true       # Reads file_uuids / session attachments.
-    produces_files: false     # Returns an auditable JSON artifact; does not upload/write files.
+    produces_files: true      # Uploads pompeyo.receipt_batch.v1 JSON and returns ready_receipts_uuid.
     # NOTE: widget testing is auto-detected from widget.enabled above.
     #       handles_files is also heuristically detected from parameter names
     #       (file_uuid, file_uuids, attachment*, *_file_*), but setting it

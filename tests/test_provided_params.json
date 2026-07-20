@@ -3,7 +3,8 @@
   "test_type": "provided_params",
   "args": {
     "analysis_prompt": "Analiza todas las boletas disponibles. Extrae proveedor, RUT, folio, fecha, montos neto/IVA/total, texto OCR relevante y posibles categorías de gasto. No escribas en ROMA ni decidas aprobación.",
-    "file_uuids": "all"
+    "file_uuids": "all",
+    "category_catalog_snapshot": "{\"version\":\"pending-roma-discovery\",\"source\":\"not_provided\",\"categories\":[]}"
   },
   "widget_params": {},
   "prompt": "",
