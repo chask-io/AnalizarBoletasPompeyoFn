@@ -283,6 +283,60 @@ def test_ready_receipts_structured_json_is_not_discarded():
     assert receipt["expense_category"]["id"] == "SIM-ALIMENTACION-81353"
 
 
+def test_acceptance_rerun_v2_same_physical_image_emits_one_auditable_receipt():
+    backend = _backend()
+    fixture = json.loads(
+        (ROOT / "test_files/acceptance_rerun_v2_duplicate_structured_outputs.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    physical_image = fixture["physical_image"]
+    results = {}
+    files = []
+    for result in fixture["results"]:
+        file_uuid = result["file_uuid"]
+        results[file_uuid] = json.dumps(result["structured_output"], ensure_ascii=False)
+        files.append(
+            _file(
+                uuid=file_uuid,
+                name=physical_image["file_name"],
+                mime=physical_image["mime_type"],
+            )
+        )
+        files[-1]["content_bytes"] = physical_image["content"].encode("utf-8")
+    catalog = backend._parse_category_catalog_snapshot(fixture["category_catalog_snapshot"])
+
+    artifact = backend._build_receipt_batch_artifact(
+        results,
+        [],
+        files,
+        [],
+        [],
+        catalog,
+    )
+
+    assert artifact["batch"]["processed_count"] == 2
+    assert len(artifact["receipts"]) == 1
+    receipt = artifact["receipts"][0]
+    assert receipt["receipt_id"] == "receipt_af75a07f0dc4368bd032d889"
+    assert receipt["parse_status"] == "parsed"
+    assert receipt["parse_method"] == "structured_json"
+    assert receipt["provider"] == "RESTAURANTE DEMO POMPEYO"
+    assert receipt["folio"] == "DEMO-81353"
+    assert receipt["date"] == "2026-07-20"
+    assert receipt["rut"] == "00.000.000-0"
+    assert receipt["currency"] == "CLP"
+    assert receipt["proposed_amount"]["numeric_value"] == 18750
+    assert receipt["expense_category"]["id"] == "SIM-ALIMENTACION-81353"
+    assert set({
+        "provider": "RESTAURANTE DEMO POMPEYO",
+        "folio": "DEMO-81353",
+        "date": "2026-07-20",
+        "rut": "00.000.000-0",
+        "currency": "CLP",
+    }.items()) <= set(receipt["audit_fields"].items())
+
+
 def test_plain_text_total_fallback_requires_total_label_and_currency_context():
     backend = _backend()
     raw_text = """
