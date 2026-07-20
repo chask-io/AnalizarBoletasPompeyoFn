@@ -388,6 +388,113 @@ def test_v5_proveedor_razon_social_populates_provider_contract_fields():
     )
 
 
+def test_v6_sanitized_receipt_date_is_canonical_iso_without_contract_regression():
+    backend = _backend()
+    file_uuid = "14c1f293-9135-4a92-b127-cf62cb664744"
+    file_record = _file(
+        uuid=file_uuid,
+        name="synthetic_receipt_demo_81353.png",
+        mime="image/png",
+    )
+    parsed = {
+        "receipts": [
+            {
+                "receipt_discriminator": "demo-81353-restaurante-demo-pompeyo-20-07-2026-clp-18-750",
+                "page_metadata": {
+                    "page_index": 1,
+                    "page_range": [1, 1],
+                    "group_label": "boleta 1",
+                },
+                "tipo_documento": "boleta",
+                "description": "Boleta electronica ficticia con detalle de items y total en CLP.",
+                "ocr_text": (
+                    "DOCUMENTO FICTICIO\n"
+                    "SOLO PRUEBAS - NO VALIDO TRIBUTARIAMENTE\n"
+                    "RESTAURANTE DEMO POMPEYO\n"
+                    "RUT: 00.000.000-0\n"
+                    "BOLETA ELECTRONICA\n"
+                    "FOLIO: DEMO-81353\n"
+                    "FECHA: 20-07-2026\n"
+                    "1 MENU EJECUTIVO $14.500\n"
+                    "1 BEBIDA $ 4.250\n"
+                    "TOTAL CLP $18.750\n"
+                    "CATEGORIA SUGERIDA: ALIMENTACION\n"
+                    "GRACIAS - DATOS 100% SINTETICOS"
+                ),
+                "campos_extraidos": {
+                    "proveedor_razon_social": {"valor": "RESTAURANTE DEMO POMPEYO", "confianza": 100},
+                    "folio": {"valor": "DEMO-81353", "confianza": 100},
+                    "fecha": {"valor": "20-07-2026", "confianza": 100},
+                    "moneda": {"valor": "CLP", "confianza": 100},
+                    "monto_total": {"valor": "18.750", "confianza": 100},
+                    "categoria": {
+                        "valor": {
+                            "id": "SIM-ALIMENTACION-81353",
+                            "name": "ALIMENTACION",
+                            "confidence": 0.95,
+                            "candidates": [],
+                            "ambiguous": False,
+                        },
+                        "confianza": 95,
+                    },
+                },
+                "extraction_confidence": 100,
+            }
+        ],
+        "extraction_confidence": 100,
+    }
+    catalog = backend._parse_category_catalog_snapshot({
+        "version": "simulation-81353",
+        "source": "synthetic_simulation_only",
+        "categories": [
+            {
+                "id": "SIM-ALIMENTACION-81353",
+                "name": "ALIMENTACION",
+                "keywords": ["RESTAURANTE", "ALIMENTACION", "DEMO POMPEYO"],
+            }
+        ],
+    })
+
+    artifact = backend._build_receipt_batch_artifact(
+        {file_uuid: json.dumps(parsed, ensure_ascii=False)},
+        [file_record],
+        [],
+        [],
+        [],
+        catalog,
+    )
+
+    receipt = artifact["receipts"][0]
+    assert artifact["batch"]["processed_count"] == 1
+    assert receipt["parse_status"] == "parsed"
+    assert receipt["provider"] == "RESTAURANTE DEMO POMPEYO"
+    assert receipt["proveedor"] == "RESTAURANTE DEMO POMPEYO"
+    assert receipt["folio"] == "DEMO-81353"
+    assert receipt["date"] == "2026-07-20"
+    assert receipt["audit_fields"]["date"] == "2026-07-20"
+    assert next(field for field in receipt["fields"] if field["field"] == "fecha")["value"] == "2026-07-20"
+    assert receipt["proposed_amount"]["numeric_value"] == 18750
+    assert receipt["expense_category"]["id"] == "SIM-ALIMENTACION-81353"
+    assert receipt["source"]["file_uuid"] == file_uuid
+    assert receipt["source"]["receipt_discriminator"] == (
+        "demo-81353-restaurante-demo-pompeyo-20-07-2026-clp-18-750"
+    )
+    assert "FECHA: 20-07-2026" in receipt["ocr"]["raw_preview"]
+
+
+def test_receipt_date_normalization_preserves_iso_and_rejects_ambiguous_or_malformed_values():
+    backend = _backend()
+
+    assert backend._canonical_receipt_date_value("2026-07-20") == "2026-07-20"
+    assert backend._canonical_receipt_date_value("20/07/2026") == "2026-07-20"
+    assert backend._canonical_receipt_date_value("20-07-2026") == "2026-07-20"
+    assert backend._canonical_receipt_date_value("07/08/2026") == "07/08/2026"
+    assert backend._canonical_receipt_date_value("20/07") == "20/07"
+    assert backend._canonical_receipt_date_value("32/07/2026") == "32/07/2026"
+    assert backend._canonical_receipt_date_value("2026/07/20") == "2026/07/20"
+    assert backend._canonical_receipt_date_value(None) is None
+
+
 def test_acceptance_rerun_v2_same_physical_image_emits_one_auditable_receipt():
     backend = _backend()
     fixture = json.loads(
