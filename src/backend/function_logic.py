@@ -120,6 +120,37 @@ CHILEAN_ID_DATE_RULES = (
     "o la etiqueta es ambigua, usa fecha_vencimiento=null con confianza baja/0 y explica la ambigüedad.\n"
 )
 
+RECEIPT_ITEMS_RESPONSE_SCHEMA = (
+    '- Cuando un archivo contiene una o más boletas/comprobantes, devuelve SIEMPRE un arreglo "receipts". '
+    'Cada item representa una boleta detectada, no necesariamente una página. No asumas una boleta por página: '
+    'si una boleta continúa en varias páginas, usa un solo item con page_range abarcando todas sus páginas.\n'
+    '- Si no detectas ninguna boleta/comprobante, devuelve "receipts": [] y explica en observaciones.\n'
+    '- Cada receipt debe incluir page_metadata con page_index (si aplica), page_range [inicio, fin] y group_label '
+    'o discriminator cuando exista evidencia visual/textual para separar boletas.\n'
+    '- Usa campos_extraidos dentro de cada receipt. Mantén compatibilidad con campos de archivo solo si el documento '
+    'realmente contiene una única boleta.\n'
+    '- Schema preferido:\n'
+    '{\n'
+    '  "file_name": "nombre breve del archivo",\n'
+    '  "description": "descripción del archivo",\n'
+    '  "receipts": [\n'
+    '    {\n'
+    '      "receipt_discriminator": "folio/proveedor/fecha/monto o etiqueta estable visible",\n'
+    '      "page_metadata": {"page_index": 1, "page_range": [1, 2], "group_label": "boleta 1"},\n'
+    '      "tipo_documento": "boleta | factura | comprobante | otro",\n'
+    '      "description": "descripción de esta boleta",\n'
+    '      "campos_extraidos": {\n'
+    '        "<nombre_campo>": {"valor": "string o null", "confianza": 0, "pagina": 1}\n'
+    '      },\n'
+    '      "extraction_confidence": 0,\n'
+    '      "ocr_text": "texto OCR relevante de esta boleta"\n'
+    '    }\n'
+    '  ],\n'
+    '  "extraction_confidence": 0,\n'
+    '  "observaciones": "notas de legibilidad o por qué receipts está vacío"\n'
+    '}\n'
+)
+
 # pypdfium2 is NOT thread-safe. PDFs are processed concurrently (ThreadPoolExecutor),
 # so all pdfium calls (open / text extraction / render) must be serialized with this
 # lock to avoid native crashes (Runtime.ExitError). Only rendering is serialized; the
@@ -174,18 +205,8 @@ PDF_SYSTEM_PROMPT = (
     "cuotón/VFG, setea presencia_cuoton=true con confianza alta.\n"
     '- Presenta también los datos clave en key_data_table como tabla Markdown para facilitar lectura humana.\n\n'
     '**Formato de respuesta:**\n'
-    'Devuelve solo JSON válido con la siguiente estructura:\n'
-    '```json\n'
-    '{\n'
-    '  "file_name": "nombre breve representativo del archivo",\n'
-    '  "description": "breve descripción del contenido del PDF",\n'
-    '  "key_data_table": "tabla en markdown con los principales datos encontrados",\n'
-    '  "campos_extraidos": {\n'
-    '    "<nombre_campo>": {"valor": "string o null", "confianza": 0}\n'
-    '  },\n'
-    '  "extraction_confidence": 0\n'
-    '}\n'
-    '```'
+    'Devuelve solo JSON válido usando este contrato:\n'
+    f'{RECEIPT_ITEMS_RESPONSE_SCHEMA}'
 )
 
 IMAGE_SYSTEM_PROMPT = (
@@ -231,18 +252,8 @@ IMAGE_SYSTEM_PROMPT = (
     "cuotón/VFG, setea presencia_cuoton=true con confianza alta.\n"
     '- Incluye observaciones breves sobre legibilidad, orientación, recortes o borrosidad si afectan la extracción.\n\n'
     '**Formato de respuesta:**\n'
-    'Devuelve solo JSON válido con la siguiente estructura:\n'
-    '```json\n'
-    '{\n'
-    '  "tipo_documento": "tipo de documento observado",\n'
-    '  "campos_extraidos": {\n'
-    '    "<nombre_campo>": {"valor": "string o null", "confianza": 0}\n'
-    '  },\n'
-    '  "extraction_confidence": 0,\n'
-    '  "image_quality": "good | medium | bad",\n'
-    '  "observaciones": "notas de legibilidad/orientación si aplica"\n'
-    '}\n'
-    '```'
+    'Devuelve solo JSON válido usando este contrato:\n'
+    f'{RECEIPT_ITEMS_RESPONSE_SCHEMA}'
 )
 
 DOCX_SYSTEM_PROMPT = (
@@ -288,21 +299,8 @@ DOCX_SYSTEM_PROMPT = (
     "cuotón/VFG, setea presencia_cuoton=true con confianza alta.\n"
     '- Presenta también los datos clave en key_data_table como tabla Markdown para facilitar lectura humana.\n\n'
     '**Formato de respuesta:**\n'
-    'Devuelve solo JSON válido con la siguiente estructura:\n'
-    '```json\n'
-    '{\n'
-    '  "file_name": "nombre breve representativo del documento",\n'
-    '  "description": "breve descripción del contenido del documento",\n'
-    '  "key_data_table": "tabla en markdown con los principales datos encontrados",\n'
-    '  "campos_extraidos": {\n'
-    '    "<nombre_campo>": {"valor": "string o null", "confianza": 0}\n'
-    '  },\n'
-    '  "extraction_confidence": 0,\n'
-    '  "embedded_images_analysis": [\n'
-    '    {"image_name": "nombre de la imagen", "description": "descripción de lo encontrado en la imagen"}\n'
-    '  ]\n'
-    '}\n'
-    '```'
+    'Devuelve solo JSON válido usando este contrato:\n'
+    f'{RECEIPT_ITEMS_RESPONSE_SCHEMA}'
 )
 
 # DOCX extraction constants
@@ -1573,6 +1571,145 @@ class FunctionBackend:
             "selection_rule": "prefer_total_label_then_confidence",
         }
 
+    def _normalize_page_range(self, page_metadata: Any) -> Tuple[Optional[int], Optional[List[int]], Optional[str]]:
+        if not isinstance(page_metadata, dict):
+            return None, None, None
+        page_index = (
+            page_metadata.get("page_index")
+            or page_metadata.get("page")
+            or page_metadata.get("pagina")
+            or page_metadata.get("page_number")
+        )
+        page_range = page_metadata.get("page_range") or page_metadata.get("pages")
+        normalized_index = None
+        try:
+            if page_index is not None:
+                normalized_index = int(page_index)
+        except (TypeError, ValueError):
+            normalized_index = None
+        normalized_range = None
+        if isinstance(page_range, list) and page_range:
+            numeric_pages = []
+            for item in page_range[:2]:
+                try:
+                    numeric_pages.append(int(item))
+                except (TypeError, ValueError):
+                    pass
+            if len(numeric_pages) == 1:
+                normalized_range = [numeric_pages[0], numeric_pages[0]]
+            elif len(numeric_pages) >= 2:
+                start, end = numeric_pages[0], numeric_pages[1]
+                normalized_range = [min(start, end), max(start, end)]
+        elif isinstance(page_range, str):
+            found = [int(num) for num in re.findall(r"\d+", page_range)]
+            if len(found) == 1:
+                normalized_range = [found[0], found[0]]
+            elif len(found) >= 2:
+                normalized_range = [min(found[0], found[1]), max(found[0], found[1])]
+        if normalized_range is None and normalized_index is not None:
+            normalized_range = [normalized_index, normalized_index]
+        group_label = (
+            page_metadata.get("group_label")
+            or page_metadata.get("receipt_group")
+            or page_metadata.get("grupo")
+        )
+        return normalized_index, normalized_range, str(group_label) if group_label else None
+
+    def _receipt_page_metadata(self, receipt_item: dict, file_record: dict) -> dict:
+        page_index, page_range, group_label = self._normalize_page_range(
+            receipt_item.get("page_metadata") or {}
+        )
+        if page_range is None:
+            field_pages = []
+            fields = receipt_item.get("campos_extraidos")
+            if isinstance(fields, dict):
+                for field_data in fields.values():
+                    if not isinstance(field_data, dict):
+                        continue
+                    page = (
+                        field_data.get("pagina")
+                        or field_data.get("page")
+                        or field_data.get("page_number")
+                    )
+                    try:
+                        field_pages.append(int(page))
+                    except (TypeError, ValueError):
+                        pass
+            if field_pages:
+                page_range = [min(field_pages), max(field_pages)]
+                page_index = min(field_pages)
+        if page_range is None:
+            fallback_range = file_record.get("page_range")
+            if isinstance(fallback_range, list) and fallback_range:
+                page_range = fallback_range
+        return {
+            "page_index": page_index,
+            "page_range": page_range,
+            "group_label": group_label,
+        }
+
+    def _receipt_discriminator(self, receipt_item: dict) -> str:
+        direct = (
+            receipt_item.get("receipt_discriminator")
+            or receipt_item.get("discriminator")
+            or receipt_item.get("group_label")
+        )
+        if direct:
+            return str(direct)
+        fields = receipt_item.get("campos_extraidos")
+        parts = []
+        if isinstance(fields, dict):
+            for name in (
+                "folio", "numero_boleta", "numero_documento", "proveedor",
+                "rut_proveedor", "fecha", "fecha_emision", "monto_total",
+                "total", "comercio",
+            ):
+                field = fields.get(name)
+                if isinstance(field, dict):
+                    value = field.get("valor")
+                else:
+                    value = field
+                if value not in (None, ""):
+                    parts.append(f"{name}:{value}")
+        if not parts and receipt_item.get("description"):
+            parts.append(str(receipt_item.get("description")))
+        return "|".join(parts) if parts else "receipt"
+
+    def _normalize_receipt_discriminator(self, value: str) -> str:
+        normalized = self._strip_accents_casefold(value or "receipt")
+        normalized = re.sub(r"[^a-z0-9]+", "-", normalized).strip("-")
+        return normalized or "receipt"
+
+    def _stable_receipt_id(self, file_record: dict, receipt_item: dict) -> str:
+        page_metadata = self._receipt_page_metadata(receipt_item, file_record)
+        discriminator = self._normalize_receipt_discriminator(
+            self._receipt_discriminator(receipt_item)
+        )
+        identity = {
+            "source_content_sha256": self._source_content_sha256(file_record),
+            "page_index": page_metadata.get("page_index"),
+            "page_range": page_metadata.get("page_range"),
+            "group_label": page_metadata.get("group_label"),
+            "receipt_discriminator": discriminator,
+        }
+        digest = hashlib.sha256(
+            json.dumps(identity, sort_keys=True, ensure_ascii=False).encode("utf-8")
+        ).hexdigest()
+        return f"receipt_{digest[:24]}"
+
+    def _receipt_items_from_parsed(self, parsed: Optional[dict]) -> Tuple[List[dict], Optional[str]]:
+        if parsed is None:
+            return [], "malformed_or_non_json_extraction"
+        receipts = parsed.get("receipts")
+        if isinstance(receipts, list):
+            normalized = [item for item in receipts if isinstance(item, dict)]
+            if normalized:
+                return normalized, None
+            return [], "no_receipts_detected"
+        if isinstance(parsed.get("campos_extraidos"), dict):
+            return [parsed], None
+        return [], "no_receipts_detected"
+
     def _detect_currency(self, value: Any) -> Optional[str]:
         if not isinstance(value, str):
             return None
@@ -1757,33 +1894,54 @@ class FunctionBackend:
         self,
         file_record: dict,
         parsed: Optional[dict],
+        receipt_item: Optional[dict],
         raw_content: str,
         category_catalog_snapshot: Optional[dict] = None,
+        parse_error: Optional[str] = None,
     ) -> dict:
+        receipt_item = receipt_item or {}
         fields = [
             normalized
-            for _, _, normalized in (self._iter_extracted_fields(parsed, file_record) or [])
+            for _, _, normalized in (self._iter_extracted_fields(receipt_item, file_record) or [])
         ]
-        amount_candidates = self._amount_candidates(parsed, file_record)
-        parse_error = None if parsed is not None else "malformed_or_non_json_extraction"
+        amount_candidates = self._amount_candidates(receipt_item, file_record)
+        page_metadata = self._receipt_page_metadata(receipt_item, file_record)
+        receipt_discriminator = self._normalize_receipt_discriminator(
+            self._receipt_discriminator(receipt_item)
+        )
+        parsed_ok = parsed is not None and parse_error is None
         return {
-            "receipt_id": file_record.get("file_uuid"),
-            "source": self._inventory_entry(file_record),
-            "parse_status": "parsed" if parsed is not None else "malformed",
+            "receipt_id": (
+                self._stable_receipt_id(file_record, receipt_item)
+                if parsed_ok else None
+            ),
+            "source": {
+                **self._inventory_entry(file_record),
+                "page_metadata": page_metadata,
+                "receipt_discriminator": receipt_discriminator,
+            },
+            "parse_status": "parsed" if parsed_ok else "not_detected",
             "parse_error": parse_error,
-            "document_type": self._redact_secret_values((parsed or {}).get("tipo_documento")),
-            "description": self._redact_secret_values((parsed or {}).get("description")),
+            "document_type": self._redact_secret_values(receipt_item.get("tipo_documento")),
+            "description": self._redact_secret_values(
+                receipt_item.get("description") or (parsed or {}).get("description")
+            ),
             "ocr": {
                 "raw_content_type": "json" if parsed is not None else "text",
-                "raw_preview": self._redact_secret_values(raw_content[:1200] if isinstance(raw_content, str) else str(raw_content)[:1200]),
+                "raw_preview": self._redact_secret_values(
+                    receipt_item.get("ocr_text")
+                    or (raw_content[:1200] if isinstance(raw_content, str) else str(raw_content)[:1200])
+                ),
             },
             "fields": fields,
             "amount_candidates": amount_candidates,
             "proposed_amount": self._proposed_amount(amount_candidates),
             "expense_category": self._category_candidates(
-                parsed, file_record, category_catalog_snapshot
+                receipt_item, file_record, category_catalog_snapshot
             ),
-            "extraction_confidence": self._confidence_0_1((parsed or {}).get("extraction_confidence")),
+            "extraction_confidence": self._confidence_0_1(
+                receipt_item.get("extraction_confidence", (parsed or {}).get("extraction_confidence"))
+            ),
         }
 
     def _build_receipt_batch_artifact(
@@ -1800,9 +1958,25 @@ class FunctionBackend:
         for file_record in processed:
             raw_content = results.get(file_record.get("file_uuid"), "Sin resultado")
             parsed = self._parse_extraction_content(raw_content, file_record.get("file_name", "?"))
-            receipts.append(self._receipt_entry(
-                file_record, parsed, raw_content, category_catalog_snapshot
-            ))
+            receipt_items, parse_error = self._receipt_items_from_parsed(parsed)
+            if not receipt_items:
+                receipts.append(self._receipt_entry(
+                    file_record,
+                    parsed,
+                    None,
+                    raw_content,
+                    category_catalog_snapshot,
+                    parse_error=parse_error,
+                ))
+                continue
+            for receipt_item in receipt_items:
+                receipts.append(self._receipt_entry(
+                    file_record,
+                    parsed,
+                    receipt_item,
+                    raw_content,
+                    category_catalog_snapshot,
+                ))
 
         skipped_entries = [
             {"file_name": name, "status": "skipped", "reason": reason}

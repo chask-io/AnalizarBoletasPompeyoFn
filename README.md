@@ -31,7 +31,8 @@ La función sube un JSON `pompeyo.receipt_batch.v1` a los archivos de la sesión
 
 - `attachment_inventory`: identidad estable, hash determinístico de metadata, tipo y estado de cada adjunto.
 - `receipts[].source.source_content_sha256`: digest sha256 del contenido real del adjunto, usado para idempotencia.
-- `receipts`: OCR/extracción por archivo, campos normalizados, candidatos de montos y categoría de gasto.
+- `receipts`: una entrada por boleta detectada, no por archivo. Un PDF puede generar varias boletas y una boleta puede abarcar varias páginas mediante `source.page_metadata.page_range`.
+- `receipts[].receipt_id`: ID determinístico derivado de `source_content_sha256`, `page_index/page_range`, `group_label` y un discriminador normalizado visible.
 - `proposed_amount`: monto determinístico propuesto a partir de candidatos, sin decidir aprobación.
 - `expense_category`: objeto con `id`, `name`, `status`, `catalog`, `source`, `confidence`, `candidates` y `ambiguous`.
 - `confidence_scale`: documenta que toda confianza se normaliza a rango `0..1`.
