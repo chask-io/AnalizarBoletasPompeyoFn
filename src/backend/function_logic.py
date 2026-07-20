@@ -40,6 +40,14 @@ logger.setLevel(logging.INFO)
 
 LAMBDA_NAME = os.getenv("AWS_LAMBDA_FUNCTION_NAME", "AnalizarBoletasPompeyoFn")
 ARTIFACT_SCHEMA_VERSION = "pompeyo.receipt_batch.v1"
+PROVIDER_ALIASES = (
+    "provider",
+    "proveedor",
+    "proveedor_razon_social",
+    "razon_social_o_proveedor",
+    "razon_social",
+    "comercio",
+)
 
 # ~4 chars per token; 20,000 tokens ≈ 80,000 chars
 MAX_CHARS_PDF_TEXT = 80_000
@@ -1359,7 +1367,7 @@ class FunctionBackend:
                 fields["monto_total"]["moneda"] = best_amount["currency"]
 
         labeled_specs = (
-            ("proveedor", ("proveedor", "comercio", "razon_social")),
+            ("proveedor", ("proveedor", "proveedor_razon_social", "comercio", "razon_social")),
             ("fecha", ("fecha", "fecha_emision")),
             ("numero_folio", ("numero_folio", "folio", "boleta", "numero_boleta")),
             ("rut_proveedor", ("rut_proveedor", "rut")),
@@ -1737,7 +1745,7 @@ class FunctionBackend:
         if not isinstance(parsed, dict):
             return
         for field_name, aliases in (
-            ("provider", ("provider", "proveedor", "razon_social_o_proveedor", "razon_social", "comercio")),
+            ("provider", PROVIDER_ALIASES),
             ("folio", ("folio", "numero_folio", "receipt_number", "numero_o_folio", "numero_boleta", "numero_documento")),
             ("date", ("date", "fecha", "fecha_emision")),
             ("rut", ("rut", "rut_proveedor", "rut_opcional", "tax_id")),
@@ -2043,6 +2051,7 @@ class FunctionBackend:
         if isinstance(fields, dict):
             for name in (
                 "folio", "numero_boleta", "numero_documento", "proveedor",
+                "proveedor_razon_social", "razon_social_o_proveedor", "razon_social",
                 "rut_proveedor", "fecha", "fecha_emision", "monto_total",
                 "total", "comercio",
             ):
@@ -2100,7 +2109,7 @@ class FunctionBackend:
     def _receipt_audit_fields(self, receipt_item: dict) -> dict:
         audit = {}
         for canonical_name, aliases in (
-            ("provider", ("provider", "proveedor", "razon_social_o_proveedor", "razon_social", "comercio")),
+            ("provider", PROVIDER_ALIASES),
             ("folio", ("folio", "numero_folio", "receipt_number", "numero_o_folio", "numero_boleta", "numero_documento")),
             ("date", ("date", "fecha", "fecha_emision")),
             ("rut", ("rut", "rut_proveedor", "rut_opcional", "tax_id")),
@@ -2420,7 +2429,7 @@ class FunctionBackend:
         )
         parsed_ok = parsed is not None and parse_error is None
         parse_method = receipt_item.get("extraction_provenance") or "structured_json"
-        return {
+        entry = {
             "receipt_id": (
                 self._stable_receipt_id(file_record, receipt_item)
                 if parsed_ok else None
@@ -2456,6 +2465,9 @@ class FunctionBackend:
                 receipt_item.get("extraction_confidence", (parsed or {}).get("extraction_confidence"))
             ),
         }
+        if audit_fields.get("provider") not in (None, ""):
+            entry["proveedor"] = audit_fields["provider"]
+        return entry
 
     def _build_receipt_batch_artifact(
         self,
