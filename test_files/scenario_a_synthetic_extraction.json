@@ -1,0 +1,60 @@
+{
+  "batch_version": "simulation-81353",
+  "generated_at": "2026-07-20T00:00:00Z",
+  "file_list": [
+    {
+      "file_uuid": "14c1f293-9135-4a92-b127-cf62cb664744",
+      "original_filename": null,
+      "source_digest": null,
+      "source": null
+    }
+  ],
+  "summary": {
+    "files_processed": 1,
+    "receipts_detected": 1,
+    "parse_status_counts": {
+      "ok": 1,
+      "ambiguous": 0,
+      "not_detected": 0
+    },
+    "total_monto_sum_clp": 18750
+  },
+  "receipts": [
+    {
+      "receipt_id": "rcpt_7d5f3e0d0d4d",
+      "parse_status": "ok",
+      "file_uuid": "14c1f293-9135-4a92-b127-cf62cb664744",
+      "original_filename": null,
+      "source_digest": null,
+      "source": null,
+      "page_index": 1,
+      "page_number": 1,
+      "monto": {
+        "valor": "18750",
+        "confianza": 99,
+        "moneda": "CLP",
+        "candidatos": [
+          {
+            "valor": "18750",
+            "moneda": "CLP",
+            "confianza": 99,
+            "texto_contexto": "TOTAL CLP $18.750"
+          }
+        ]
+      },
+      "categoria": {
+        "id": "SIM-ALIMENTACION-81353",
+        "name": "ALIMENTACION",
+        "confidence": 98,
+        "ambiguous": false,
+        "candidates": [
+          {
+            "id": "SIM-ALIMENTACION-81353",
+            "name": "ALIMENTACION",
+            "confidence": 98
+          }
+        ]
+      }
+    }
+  ]
+}
