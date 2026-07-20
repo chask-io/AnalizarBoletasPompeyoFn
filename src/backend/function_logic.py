@@ -1323,13 +1323,248 @@ class FunctionBackend:
             parsed = json.loads(content)
         except json.JSONDecodeError as e:
             logger.warning(f"Could not parse LLM JSON for {file_name}: {e}")
-            return None
+            parsed = self._recover_labeled_receipt_text(content)
+            if parsed is None:
+                return None
+            logger.info(
+                "deterministic_text_fallback_status=recovered file_name=%s",
+                file_name,
+            )
         if not isinstance(parsed, dict):
             logger.warning(f"LLM JSON for {file_name} is not an object")
             return None
         self._apply_rut_dv_check(parsed)
         normalize_financial_candidates(parsed)
         return parsed
+
+    def _recover_labeled_receipt_text(self, content: str) -> Optional[dict]:
+        """Recover conservative receipt facts from malformed JSON/plain text.
+
+        This is intentionally narrow: it only uses explicitly labeled receipt
+        fields and never treats unlabeled identity/date/folio numbers as money.
+        """
+        if not isinstance(content, str) or not content.strip():
+            return None
+
+        fields: Dict[str, dict] = {}
+        amount_candidates = self._recover_amount_candidates_from_text(content)
+        if amount_candidates:
+            best_amount = amount_candidates[0]
+            fields["monto_total"] = {
+                "valor": best_amount["value"],
+                "confianza": 72,
+                "texto_contexto": best_amount.get("source", {}).get("context"),
+            }
+            if best_amount.get("currency"):
+                fields["monto_total"]["moneda"] = best_amount["currency"]
+
+        labeled_specs = (
+            ("proveedor", ("proveedor", "comercio", "razon_social")),
+            ("fecha", ("fecha", "fecha_emision")),
+            ("numero_folio", ("numero_folio", "folio", "boleta", "numero_boleta")),
+            ("rut_proveedor", ("rut_proveedor", "rut")),
+        )
+        for output_name, labels in labeled_specs:
+            value = self._recover_first_labeled_value(content, labels)
+            if value:
+                fields[output_name] = {"valor": value, "confianza": 70}
+
+        category_name = self._recover_first_labeled_value(
+            content,
+            ("categoria", "category", "rubro"),
+            nested_value_keys=("name", "nombre", "valor", "value"),
+        )
+        if category_name:
+            fields["categoria_sugerida"] = {"valor": category_name, "confianza": 65}
+
+        if not fields and not amount_candidates:
+            return None
+
+        receipt = {
+            "receipt_discriminator": self._fallback_receipt_discriminator(fields),
+            "page_metadata": self._recover_page_metadata(content),
+            "tipo_documento": "comprobante",
+            "description": "Extraccion recuperada desde texto no JSON con etiquetas explicitas.",
+            "campos_extraidos": fields,
+            "amount_candidates": amount_candidates,
+            "extraction_confidence": 70 if amount_candidates else 45,
+            "extraction_provenance": "deterministic_text_fallback",
+            "ocr_text": content[:1200],
+        }
+        return {
+            "receipts": [receipt],
+            "extraction_confidence": receipt["extraction_confidence"],
+            "extraction_provenance": "deterministic_text_fallback",
+            "observaciones": (
+                "Respuesta LLM no era JSON valido; se recuperaron solo campos "
+                "explicitamente etiquetados."
+            ),
+        }
+
+    def _recover_page_metadata(self, content: str) -> dict:
+        page = self._recover_first_labeled_value(
+            content,
+            ("page_index", "page_number", "pagina"),
+        )
+        try:
+            page_int = int(str(page))
+        except (TypeError, ValueError):
+            page_int = None
+        if page_int is None:
+            return {}
+        return {"page_index": page_int, "page_range": [page_int, page_int]}
+
+    def _fallback_receipt_discriminator(self, fields: Dict[str, dict]) -> str:
+        parts = []
+        for name in ("numero_folio", "proveedor", "fecha", "monto_total"):
+            value = fields.get(name, {}).get("valor")
+            if value:
+                parts.append(f"{name}:{value}")
+        return "|".join(parts) if parts else "deterministic_text_fallback"
+
+    def _recover_first_labeled_value(
+        self,
+        content: str,
+        labels: Tuple[str, ...],
+        nested_value_keys: Tuple[str, ...] = ("valor", "value"),
+    ) -> Optional[str]:
+        for label in labels:
+            object_value = self._recover_jsonish_object_value(
+                content,
+                label,
+                nested_value_keys,
+            )
+            if object_value:
+                return object_value
+            scalar_value = self._recover_scalar_labeled_value(content, label)
+            if scalar_value:
+                return scalar_value
+        return None
+
+    def _recover_jsonish_object_value(
+        self,
+        content: str,
+        label: str,
+        value_keys: Tuple[str, ...],
+    ) -> Optional[str]:
+        label_pattern = re.escape(label)
+        object_match = re.search(
+            rf'"{label_pattern}"\s*:\s*\{{(?P<body>.{{0,1200}}?)\}}',
+            content,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if not object_match:
+            return None
+        body = object_match.group("body")
+        for key in value_keys:
+            key_pattern = re.escape(key)
+            value_match = re.search(
+                rf'"{key_pattern}"\s*:\s*(?:"(?P<string>[^"]+)"|(?P<number>-?\d+(?:[.,]\d+)?))',
+                body,
+                re.IGNORECASE,
+            )
+            if value_match:
+                value = value_match.group("string") or value_match.group("number")
+                return value.strip() if value else None
+        return None
+
+    def _recover_scalar_labeled_value(self, content: str, label: str) -> Optional[str]:
+        label_pattern = re.escape(label).replace(r"\_", r"[_\s-]?")
+        match = re.search(
+            rf"(?im)^\s*(?:{label_pattern})\s*[:#-]\s*(?P<value>[^\n\r]{{1,120}})",
+            content,
+        )
+        if not match:
+            return None
+        value = match.group("value").strip().strip('"').strip()
+        return value or None
+
+    def _recover_amount_candidates_from_text(self, content: str) -> List[dict]:
+        candidates = []
+        seen = set()
+        for candidate in self._recover_jsonish_amount_candidates(content):
+            self._append_recovered_amount_candidate(candidates, seen, candidate)
+        for candidate in self._recover_plain_total_amount_candidates(content):
+            self._append_recovered_amount_candidate(candidates, seen, candidate)
+        return candidates
+
+    def _append_recovered_amount_candidate(
+        self,
+        candidates: List[dict],
+        seen: set,
+        candidate: dict,
+    ) -> None:
+        numeric_value = self._parse_numeric_value(candidate.get("value"))
+        if numeric_value is None:
+            numeric_value = self._parse_numeric_value(candidate.get("context"))
+        if numeric_value is None:
+            return
+        dedupe_key = (candidate.get("label"), numeric_value, candidate.get("context"))
+        if dedupe_key in seen:
+            return
+        seen.add(dedupe_key)
+        candidates.append({
+            "label": candidate.get("label") or "monto_total",
+            "value": candidate.get("value"),
+            "numeric_value": numeric_value,
+            "currency": candidate.get("currency"),
+            "confidence": 0.72,
+            "source": {
+                "type": "deterministic_text_fallback",
+                "context": candidate.get("context"),
+            },
+        })
+
+    def _recover_jsonish_amount_candidates(self, content: str) -> List[dict]:
+        recovered = []
+        for label in ("monto_total", "total", "monto"):
+            value = self._recover_jsonish_object_value(content, label, ("valor", "value", "numeric_value"))
+            if not value:
+                continue
+            object_match = re.search(
+                rf'"{re.escape(label)}"\s*:\s*\{{(?P<body>.{{0,1200}}?)\}}',
+                content,
+                re.IGNORECASE | re.DOTALL,
+            )
+            body = object_match.group("body") if object_match else ""
+            currency = self._recover_jsonish_object_value(content, label, ("moneda", "currency"))
+            context_match = re.search(
+                r'"texto_contexto"\s*:\s*"(?P<context>[^"]+)"',
+                body,
+                re.IGNORECASE,
+            )
+            context = context_match.group("context") if context_match else None
+            if label == "monto" and not (currency or self._detect_currency(context)):
+                continue
+            recovered.append({
+                "label": "monto_total" if label in ("total", "monto_total") else "monto",
+                "value": value,
+                "currency": currency or self._detect_currency(context),
+                "context": context or f"{label}: {value}",
+            })
+        return recovered
+
+    def _recover_plain_total_amount_candidates(self, content: str) -> List[dict]:
+        recovered = []
+        pattern = re.compile(
+            r"(?im)\b(?P<label>monto\s+total|total)\b"
+            r"(?P<context>[^\n\r]{0,80}?(?:\$|CLP|USD|UF)[^\n\r]{0,40})",
+        )
+        for match in pattern.finditer(content):
+            context = f"{match.group('label')} {match.group('context')}".strip()
+            value_match = re.search(
+                r"(?<![\w-])(\d{1,3}(?:[.,]\d{3})+(?:,\d{1,2})?|\d{4,})(?![\w-])",
+                context,
+            )
+            if not value_match:
+                continue
+            recovered.append({
+                "label": "monto_total",
+                "value": value_match.group(1),
+                "currency": self._detect_currency(context),
+                "context": context,
+            })
+        return recovered
 
     def _get_source_bytes(self, file_record: dict) -> bytes:
         file_uuid = file_record.get("file_uuid") or file_record.get("uuid")
@@ -1667,7 +1902,13 @@ class FunctionBackend:
             }
         ordered = sorted(valid, key=self._amount_priority, reverse=True)
         top = ordered[0]
-        runner_up = ordered[1] if len(ordered) > 1 else None
+        runner_up = next(
+            (
+                candidate for candidate in ordered[1:]
+                if candidate.get("numeric_value") != top.get("numeric_value")
+            ),
+            None,
+        )
         ambiguous = False
         if runner_up is not None:
             same_priority = self._amount_priority(top)[0] == self._amount_priority(runner_up)[0]
@@ -1815,6 +2056,8 @@ class FunctionBackend:
         if parsed is None:
             return [], "malformed_or_non_json_extraction"
         receipts = parsed.get("receipts")
+        if not isinstance(receipts, list):
+            receipts = parsed.get("ready_receipts")
         if isinstance(receipts, list):
             normalized = [item for item in receipts if isinstance(item, dict)]
             if normalized:
@@ -1918,6 +2161,14 @@ class FunctionBackend:
                     parts.append(str(field_data.get("texto_contexto", "")))
                 else:
                     parts.append(str(field_data))
+        for category_key in ("categoria", "category", "expense_category"):
+            category = parsed.get(category_key)
+            if not isinstance(category, dict):
+                continue
+            for value_key in ("name", "nombre", "valor", "value"):
+                value = category.get(value_key)
+                if isinstance(value, str):
+                    parts.append(value)
         return self._strip_accents_casefold(" ".join(parts))
 
     def _category_candidates(
@@ -2024,6 +2275,7 @@ class FunctionBackend:
             self._receipt_discriminator(receipt_item)
         )
         parsed_ok = parsed is not None and parse_error is None
+        parse_method = receipt_item.get("extraction_provenance") or "structured_json"
         return {
             "receipt_id": (
                 self._stable_receipt_id(file_record, receipt_item)
@@ -2036,6 +2288,7 @@ class FunctionBackend:
             },
             "parse_status": "parsed" if parsed_ok else "not_detected",
             "parse_error": parse_error,
+            "parse_method": parse_method if parsed_ok else None,
             "document_type": self._redact_secret_values(receipt_item.get("tipo_documento")),
             "description": self._redact_secret_values(
                 receipt_item.get("description") or (parsed or {}).get("description")

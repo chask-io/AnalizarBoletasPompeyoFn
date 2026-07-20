@@ -1,0 +1,50 @@
+{
+  "ready_receipts": [
+    {
+      "parse_status": "ok",
+      "receipt_id": null,
+      "file_uuid": null,
+      "original_filename": null,
+      "page_index": 1,
+      "page_number": 1,
+      "source_digest": null,
+      "source": null,
+      "monto": {
+        "valor": 18750,
+        "moneda": "CLP",
+        "confianza": 99
+      },
+      "fecha": {
+        "valor": "2026-07-20",
+        "confianza": 99
+      },
+      "proveedor": {
+        "valor": "RESTAURANTE DEMO POMPEYO",
+        "confianza": 99
+      },
+      "numero_folio": {
+        "valor": "DEMO-81353",
+        "confianza": 99
+      },
+      "categoria": {
+        "category_id": "SIM-ALIMENTACION-81353",
+        "name": "ALIMENTACIÓN",
+        "confidence": 0.99,
+        "ambiguous": false,
+        "candidates": [
+          {
+            "category_id": "SIM-ALIMENTACION-81353",
+            "name": "ALIMENTACIÓN",
+            "confidence": 0.99
+          }
+        ]
+      },
+      "incidencias": [
+        {
+          "code": "missing_file_metadata",
+          "detail": "No se proporcionó file_uuid ni original_filename para generar receipt_id determinístico."
+        }
+      ]
+    }
+  ],
+  "inventario_adjuntos_procesado

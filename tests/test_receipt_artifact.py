@@ -193,6 +193,120 @@ def test_scenario_a_synthetic_monto_shape_becomes_actionable():
     assert receipt["amount_candidates"][1]["source"]["context"] == "TOTAL CLP $18.750"
 
 
+def test_final_acceptance_truncated_preview_recovers_actionable_receipt():
+    backend = _backend()
+    raw_preview = (ROOT / "test_files/final_acceptance_truncated_preview_767aefb6.json").read_text(
+        encoding="utf-8"
+    )
+    file_uuid = "14c1f293-9135-4a92-b127-cf62cb664744"
+    catalog = backend._parse_category_catalog_snapshot({
+        "version": "simulation-81353",
+        "source": "synthetic_simulation_only",
+        "categories": [
+            {
+                "id": "SIM-ALIMENTACION-81353",
+                "name": "ALIMENTACIÓN",
+                "keywords": ["ALIMENTACIÓN", "ALIMENTACION"],
+            }
+        ],
+    })
+
+    artifact = backend._build_receipt_batch_artifact(
+        {file_uuid: raw_preview},
+        [_file(uuid=file_uuid, name="synthetic_receipt_demo_81353.png", mime="image/png")],
+        [],
+        [],
+        [],
+        catalog,
+    )
+
+    assert artifact["batch"]["processed_count"] == 1
+    assert len(artifact["receipts"]) == 1
+    receipt = artifact["receipts"][0]
+    assert receipt["parse_status"] == "parsed"
+    assert receipt["parse_error"] is None
+    assert receipt["parse_method"] == "deterministic_text_fallback"
+    assert receipt["receipt_id"]
+    assert receipt["proposed_amount"]["numeric_value"] == 18750
+    assert receipt["proposed_amount"]["currency"] == "CLP"
+    assert receipt["proposed_amount"]["ambiguous"] is False
+    assert receipt["expense_category"]["id"] == "SIM-ALIMENTACION-81353"
+    assert receipt["expense_category"]["status"] == "resolved"
+    assert receipt["fields"][0]["confidence"] <= 0.72
+
+
+def test_ready_receipts_structured_json_is_not_discarded():
+    backend = _backend()
+    file_uuid = "14c1f293-9135-4a92-b127-cf62cb664744"
+    parsed = {
+        "ready_receipts": [
+            {
+                "parse_status": "ok",
+                "monto": {"valor": 18750, "moneda": "CLP", "confianza": 99},
+                "fecha": {"valor": "2026-07-20", "confianza": 99},
+                "proveedor": {"valor": "RESTAURANTE DEMO POMPEYO", "confianza": 99},
+                "numero_folio": {"valor": "DEMO-81353", "confianza": 99},
+                "categoria": {
+                    "category_id": "SIM-ALIMENTACION-81353",
+                    "name": "ALIMENTACIÓN",
+                    "confidence": 0.99,
+                },
+            }
+        ]
+    }
+    catalog = backend._parse_category_catalog_snapshot({
+        "version": "simulation-81353",
+        "source": "synthetic_simulation_only",
+        "categories": [
+            {
+                "id": "SIM-ALIMENTACION-81353",
+                "name": "ALIMENTACIÓN",
+                "keywords": ["ALIMENTACIÓN"],
+            }
+        ],
+    })
+
+    artifact = backend._build_receipt_batch_artifact(
+        {file_uuid: json.dumps(parsed)},
+        [_file(uuid=file_uuid, name="synthetic_receipt_demo_81353.png", mime="image/png")],
+        [],
+        [],
+        [],
+        catalog,
+    )
+
+    receipt = artifact["receipts"][0]
+    assert receipt["parse_status"] == "parsed"
+    assert receipt["parse_method"] == "structured_json"
+    assert receipt["parse_error"] is None
+    assert receipt["proposed_amount"]["numeric_value"] == 18750
+    assert receipt["expense_category"]["id"] == "SIM-ALIMENTACION-81353"
+
+
+def test_plain_text_total_fallback_requires_total_label_and_currency_context():
+    backend = _backend()
+    raw_text = """
+    RESTAURANTE DEMO POMPEYO
+    RUT: 76.123.456-7
+    FOLIO: 18750
+    FECHA: 20/07/2026
+    TOTAL CLP $18.750
+    CATEGORIA: ALIMENTACION
+    """
+
+    artifact = backend._build_receipt_batch_artifact(
+        {"file-1": raw_text},
+        [_file()],
+        [],
+        [],
+        [],
+    )
+
+    receipt = artifact["receipts"][0]
+    assert receipt["parse_method"] == "deterministic_text_fallback"
+    assert receipt["proposed_amount"]["numeric_value"] == 18750
+
+
 def test_chilean_total_formats_normalize_to_same_integer_amount():
     backend = _backend()
 
@@ -229,6 +343,48 @@ def test_non_amount_identity_numbers_are_not_treated_as_amounts():
     assert receipt["proposed_amount"]["selection_rule"] == "no_numeric_amount_candidate"
 
 
+def test_text_fallback_does_not_treat_rut_date_or_folio_as_amounts():
+    backend = _backend()
+    raw_text = """
+    RESTAURANTE DEMO POMPEYO
+    RUT: 76.123.456-7
+    FOLIO: 18750
+    FECHA: 20/07/2026
+    """
+
+    artifact = backend._build_receipt_batch_artifact(
+        {"file-1": raw_text},
+        [_file()],
+        [],
+        [],
+        [],
+    )
+
+    receipt = artifact["receipts"][0]
+    assert receipt["parse_status"] == "parsed"
+    assert receipt["amount_candidates"] == []
+    assert receipt["proposed_amount"]["numeric_value"] is None
+    assert receipt["proposed_amount"]["selection_rule"] == "no_numeric_amount_candidate"
+
+
+def test_text_fallback_malformed_no_receipt_stays_not_detected():
+    backend = _backend()
+    raw_text = "imagen borrosa sin texto legible ni campos de boleta"
+
+    artifact = backend._build_receipt_batch_artifact(
+        {"file-1": raw_text},
+        [_file()],
+        [],
+        [],
+        [],
+    )
+
+    receipt = artifact["receipts"][0]
+    assert receipt["receipt_id"] is None
+    assert receipt["parse_status"] == "not_detected"
+    assert receipt["parse_error"] == "malformed_or_non_json_extraction"
+
+
 def test_multiple_total_candidates_with_close_confidence_stay_ambiguous():
     backend = _backend()
     parsed = {
@@ -242,6 +398,43 @@ def test_multiple_total_candidates_with_close_confidence_stay_ambiguous():
 
     assert receipt["proposed_amount"]["numeric_value"] == 18750
     assert receipt["proposed_amount"]["ambiguous"] is True
+
+
+def test_text_fallback_multiple_total_candidates_stay_ambiguous():
+    backend = _backend()
+    raw_text = """
+    RESTAURANTE DEMO POMPEYO
+    TOTAL CLP $18.750
+    TOTAL CLP $19.750
+    """
+
+    artifact = backend._build_receipt_batch_artifact(
+        {"file-1": raw_text},
+        [_file()],
+        [],
+        [],
+        [],
+    )
+
+    receipt = artifact["receipts"][0]
+    assert receipt["proposed_amount"]["numeric_value"] == 18750
+    assert receipt["proposed_amount"]["ambiguous"] is True
+
+
+def test_structured_json_path_keeps_parse_method_and_existing_amount_shape():
+    backend = _backend()
+    parsed = {
+        "campos_extraidos": {
+            "monto_total": {"valor": "$18.750", "confianza": 99},
+        },
+        "extraction_confidence": 99,
+    }
+
+    receipt = backend._receipt_entry(_file(), parsed, parsed, json.dumps(parsed))
+
+    assert receipt["parse_method"] == "structured_json"
+    assert receipt["parse_status"] == "parsed"
+    assert receipt["proposed_amount"]["numeric_value"] == 18750
 
 
 def test_two_distinct_receipts_in_one_pdf_emit_two_artifact_receipts():
