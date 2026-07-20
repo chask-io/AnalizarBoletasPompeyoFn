@@ -4,6 +4,8 @@ import types
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
@@ -281,6 +283,109 @@ def test_ready_receipts_structured_json_is_not_discarded():
     assert receipt["parse_error"] is None
     assert receipt["proposed_amount"]["numeric_value"] == 18750
     assert receipt["expense_category"]["id"] == "SIM-ALIMENTACION-81353"
+
+
+def test_v5_proveedor_razon_social_populates_provider_contract_fields():
+    backend = _backend()
+    file_uuid = "14c1f293-9135-4a92-b127-cf62cb664744"
+    evidence_image = Path("/tmp/pompeyo-81353-v5-contract-failure/synthetic_receipt_demo_81353.png")
+    if not evidence_image.exists():
+        pytest.skip("sanitized v5 evidence image is not present")
+    file_record = _file(
+        uuid=file_uuid,
+        name="synthetic_receipt_demo_81353.png",
+        mime="image/png",
+    )
+    file_record["content_bytes"] = evidence_image.read_bytes()
+    parsed = {
+        "receipts": [
+            {
+                "receipt_discriminator": "demo-81353-restaurante-demo-pompeyo-2026-07-20-18750",
+                "page_metadata": {
+                    "page_index": 1,
+                    "page_range": [1, 1],
+                    "group_label": "boleta 1",
+                },
+                "tipo_documento": "boleta",
+                "description": "Boleta electronica de restaurante demo con total en CLP y categoria sugerida alimentacion.",
+                "ocr_text": (
+                    "DOCUMENTO FICTICIO\n"
+                    "RESTAURANTE DEMO POMPEYO\n"
+                    "RUT: 00.000.000-0\n"
+                    "FOLIO: DEMO-81353\n"
+                    "FECHA: 20-07-2026\n"
+                    "TOTAL CLP $18.750\n"
+                    "CATEGORIA SUGERIDA: ALIMENTACION"
+                ),
+                "campos_extraidos": {
+                    "proveedor_razon_social": {
+                        "valor": "RESTAURANTE DEMO POMPEYO",
+                        "confianza": 99,
+                        "pagina": 1,
+                    },
+                    "rut_proveedor": {"valor": "00.000.000-0", "confianza": 99, "pagina": 1},
+                    "folio": {"valor": "DEMO-81353", "confianza": 99, "pagina": 1},
+                    "fecha": {"valor": "2026-07-20", "confianza": 99, "pagina": 1},
+                    "moneda": {"valor": "CLP", "confianza": 98, "pagina": 1},
+                    "monto_total": {"valor": "18750", "confianza": 99, "pagina": 1},
+                    "categoria": {
+                        "valor": {
+                            "id": "SIM-ALIMENTACION-81353",
+                            "name": "ALIMENTACION",
+                            "confidence": 0.99,
+                            "ambiguous": False,
+                            "candidates": [
+                                {
+                                    "id": "SIM-ALIMENTACION-81353",
+                                    "name": "ALIMENTACION",
+                                    "confidence": 0.99,
+                                }
+                            ],
+                        },
+                        "confianza": 99,
+                        "pagina": 1,
+                    },
+                },
+                "extraction_confidence": 99,
+            }
+        ],
+        "extraction_confidence": 99,
+    }
+    catalog = backend._parse_category_catalog_snapshot({
+        "version": "simulation-81353",
+        "source": "synthetic_simulation_only",
+        "categories": [
+            {
+                "id": "SIM-ALIMENTACION-81353",
+                "name": "ALIMENTACION",
+                "keywords": ["RESTAURANTE", "ALIMENTACION", "DEMO POMPEYO"],
+            }
+        ],
+    })
+
+    artifact = backend._build_receipt_batch_artifact(
+        {file_uuid: json.dumps(parsed, ensure_ascii=False)},
+        [],
+        [file_record],
+        [],
+        [],
+        catalog,
+    )
+
+    assert artifact["batch"]["processed_count"] == 1
+    assert len(artifact["receipts"]) == 1
+    receipt = artifact["receipts"][0]
+    assert receipt["parse_status"] == "parsed"
+    assert receipt["provider"] == "RESTAURANTE DEMO POMPEYO"
+    assert receipt["proveedor"] == "RESTAURANTE DEMO POMPEYO"
+    assert receipt["audit_fields"]["provider"] == "RESTAURANTE DEMO POMPEYO"
+    assert receipt["folio"] == "DEMO-81353"
+    assert receipt["date"] == "2026-07-20"
+    assert receipt["proposed_amount"]["numeric_value"] == 18750
+    assert receipt["expense_category"]["id"] == "SIM-ALIMENTACION-81353"
+    assert receipt["source"]["source_content_sha256"] == (
+        "a62e64a6ef9093fc5152010da6d5f60d4dbb782442f8302023596e56fc3dfd13"
+    )
 
 
 def test_acceptance_rerun_v2_same_physical_image_emits_one_auditable_receipt():
