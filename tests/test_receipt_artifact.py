@@ -283,6 +283,60 @@ def test_ready_receipts_structured_json_is_not_discarded():
     assert receipt["expense_category"]["id"] == "SIM-ALIMENTACION-81353"
 
 
+def test_acceptance_rerun_v2_same_physical_image_emits_one_auditable_receipt():
+    backend = _backend()
+    fixture = json.loads(
+        (ROOT / "test_files/acceptance_rerun_v2_duplicate_structured_outputs.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    physical_image = fixture["physical_image"]
+    results = {}
+    files = []
+    for result in fixture["results"]:
+        file_uuid = result["file_uuid"]
+        results[file_uuid] = json.dumps(result["structured_output"], ensure_ascii=False)
+        files.append(
+            _file(
+                uuid=file_uuid,
+                name=physical_image["file_name"],
+                mime=physical_image["mime_type"],
+            )
+        )
+        files[-1]["content_bytes"] = physical_image["content"].encode("utf-8")
+    catalog = backend._parse_category_catalog_snapshot(fixture["category_catalog_snapshot"])
+
+    artifact = backend._build_receipt_batch_artifact(
+        results,
+        [],
+        files,
+        [],
+        [],
+        catalog,
+    )
+
+    assert artifact["batch"]["processed_count"] == 2
+    assert len(artifact["receipts"]) == 1
+    receipt = artifact["receipts"][0]
+    assert receipt["receipt_id"] == "receipt_af75a07f0dc4368bd032d889"
+    assert receipt["parse_status"] == "parsed"
+    assert receipt["parse_method"] == "structured_json"
+    assert receipt["provider"] == "RESTAURANTE DEMO POMPEYO"
+    assert receipt["folio"] == "DEMO-81353"
+    assert receipt["date"] == "2026-07-20"
+    assert receipt["rut"] == "00.000.000-0"
+    assert receipt["currency"] == "CLP"
+    assert receipt["proposed_amount"]["numeric_value"] == 18750
+    assert receipt["expense_category"]["id"] == "SIM-ALIMENTACION-81353"
+    assert set({
+        "provider": "RESTAURANTE DEMO POMPEYO",
+        "folio": "DEMO-81353",
+        "date": "2026-07-20",
+        "rut": "00.000.000-0",
+        "currency": "CLP",
+    }.items()) <= set(receipt["audit_fields"].items())
+
+
 def test_plain_text_total_fallback_requires_total_label_and_currency_context():
     backend = _backend()
     raw_text = """
@@ -475,6 +529,51 @@ def test_two_distinct_receipts_in_one_pdf_emit_two_artifact_receipts():
     assert artifact["receipts"][0]["receipt_id"] != artifact["receipts"][1]["receipt_id"]
     assert artifact["receipts"][0]["source"]["file_uuid"] == "file-1"
     assert artifact["receipts"][1]["proposed_amount"]["numeric_value"] == 20000
+
+
+def test_no_folio_same_page_receipts_with_distinct_discriminators_remain_two():
+    backend = _backend()
+    parsed = {
+        "receipts": [
+            {
+                "receipt_discriminator": "mesa 12 venta tarjeta",
+                "page_metadata": {"page_index": 1, "page_range": [1, 1]},
+                "campos_extraidos": {
+                    "proveedor": {"valor": "RESTAURANTE DEMO", "confianza": 95, "pagina": 1},
+                    "fecha": {"valor": "2026-07-20", "confianza": 95, "pagina": 1},
+                    "monto_total": {"valor": "$10.000", "confianza": 90, "pagina": 1},
+                },
+                "categoria_propuesta": {"id": "ALIMENTACION", "name": "Alimentacion"},
+                "extraction_confidence": 90,
+            },
+            {
+                "receipt_discriminator": "mesa 14 venta efectivo",
+                "page_metadata": {"page_index": 1, "page_range": [1, 1]},
+                "campos_extraidos": {
+                    "proveedor": {"valor": "RESTAURANTE DEMO", "confianza": 95, "pagina": 1},
+                    "fecha": {"valor": "2026-07-20", "confianza": 95, "pagina": 1},
+                    "monto_total": {"valor": "$10.000", "confianza": 90, "pagina": 1},
+                },
+                "categoria_propuesta": {"id": "ALIMENTACION", "name": "Alimentacion"},
+                "extraction_confidence": 90,
+            },
+        ]
+    }
+
+    artifact = backend._build_receipt_batch_artifact(
+        {"file-1": json.dumps(parsed)},
+        [_file(name="same-page-no-folio.pdf")],
+        [],
+        [],
+        [],
+    )
+
+    assert len(artifact["receipts"]) == 2
+    assert artifact["receipts"][0]["receipt_id"] != artifact["receipts"][1]["receipt_id"]
+    assert [
+        receipt["source"]["receipt_discriminator"]
+        for receipt in artifact["receipts"]
+    ] == ["mesa-12-venta-tarjeta", "mesa-14-venta-efectivo"]
 
 
 def test_one_receipt_can_span_two_pdf_pages():

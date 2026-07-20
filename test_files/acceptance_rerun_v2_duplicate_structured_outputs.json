@@ -1,0 +1,146 @@
+{
+  "category_catalog_snapshot": {
+    "version": "simulation-81353",
+    "source": "synthetic_simulation_only",
+    "categories": [
+      {
+        "id": "SIM-ALIMENTACION-81353",
+        "name": "ALIMENTACIÓN",
+        "keywords": [
+          "RESTAURANTE",
+          "ALIMENTACION",
+          "ALIMENTACIÓN",
+          "DEMO POMPEYO"
+        ]
+      }
+    ]
+  },
+  "physical_image": {
+    "file_name": "synthetic_receipt_demo_81353.png",
+    "mime_type": "image/png",
+    "content": "sanitized acceptance rerun v2 image bytes"
+  },
+  "results": [
+    {
+      "file_uuid": "14c1f293-9135-4a92-b127-cf62cb664744",
+      "structured_output": {
+        "file_name": "synthetic_receipt_demo_81353.png",
+        "description": "Boleta electrónica de restaurante con ítems y total en CLP.",
+        "receipts": [
+          {
+            "receipt_discriminator": "restaurante-demo-pompeyo-demo-81353-20-07-2026-18750",
+            "page_metadata": {
+              "page_range": [
+                1,
+                1
+              ],
+              "group_label": "boleta 1"
+            },
+            "tipo_documento": "boleta",
+            "description": "Boleta electrónica de restaurante con ítems y total en CLP.",
+            "campos_extraidos": {
+              "proveedor": {
+                "valor": "RESTAURANTE DEMO POMPEYO",
+                "confianza": 99,
+                "pagina": 1
+              },
+              "rut_proveedor": {
+                "valor": "00.000.000-0",
+                "confianza": 99,
+                "pagina": 1
+              },
+              "folio": {
+                "valor": "DEMO-81353",
+                "confianza": 99,
+                "pagina": 1
+              },
+              "fecha_emision": {
+                "valor": "2026-07-20",
+                "confianza": 99,
+                "pagina": 1
+              },
+              "moneda": {
+                "valor": "CLP",
+                "confianza": 99,
+                "pagina": 1
+              },
+              "monto_total": {
+                "valor": "18750",
+                "confianza": 99,
+                "pagina": 1
+              },
+              "categoria_sugerida": {
+                "valor": "ALIMENTACIÓN",
+                "confianza": 99,
+                "pagina": 1
+              },
+              "items_visibles": {
+                "valor": "1 MENÚ EJECUTIVO; 1 BEBIDA",
+                "confianza": 99,
+                "pagina": 1
+              }
+            },
+            "ocr_text": "DOCUMENTO FICTICIO\nSOLO PRUEBAS - NO VÁLIDO TRIBUTARIAMENTE\nRESTAURANTE DEMO POMPEYO\nRUT: 00.000.000-0\nBOLETA ELECTRÓNICA\nFOLIO: DEMO-81353\nFECHA: 20-07-2026\nTOTAL CLP $18.750\nCATEGORÍA SUGERIDA: ALIMENTACIÓN",
+            "extraction_confidence": 99
+          }
+        ],
+        "extraction_confidence": 99
+      }
+    },
+    {
+      "file_uuid": "4b817b24-496c-4067-b372-e075b45fb91d",
+      "structured_output": {
+        "file_name": "synthetic_receipt_demo_81353.png",
+        "description": "Boleta electrónica de restaurante con ítems de menú ejecutivo y bebida.",
+        "receipts": [
+          {
+            "receipt_discriminator": "restaurante-demo-pompeyo-demo-81353-20-07-2026-clp-18-750",
+            "page_metadata": {
+              "page_range": [
+                1,
+                1
+              ],
+              "group_label": "boleta 1"
+            },
+            "tipo_documento": "boleta",
+            "description": "Boleta electrónica de restaurante con ítems de menú ejecutivo y bebida.",
+            "campos_extraidos": {
+              "monto": {
+                "valor": "18750 CLP",
+                "confianza": 99,
+                "pagina": 1
+              },
+              "fecha": {
+                "valor": "2026-07-20",
+                "confianza": 99,
+                "pagina": 1
+              },
+              "proveedor": {
+                "valor": "RESTAURANTE DEMO POMPEYO",
+                "confianza": 99,
+                "pagina": 1
+              },
+              "numero_o_folio": {
+                "valor": "DEMO-81353",
+                "confianza": 99,
+                "pagina": 1
+              },
+              "categoria": {
+                "valor": {
+                  "id": "SIM-ALIMENTACION-81353",
+                  "name": "ALIMENTACIÓN",
+                  "confidence": 0.99
+                },
+                "confianza": 99,
+                "pagina": 1
+              }
+            },
+            "ocr_text": "DOCUMENTO FICTICIO | RESTAURANTE DEMO POMPEYO | FOLIO: DEMO-81353 | FECHA: 20-07-2026 | TOTAL CLP $18.750 | CATEGORÍA SUGERIDA: ALIMENTACIÓN",
+            "extraction_confidence": 99
+          }
+        ],
+        "extraction_confidence": 99
+      }
+    }
+  ]
+}

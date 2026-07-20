@@ -1715,15 +1715,42 @@ class FunctionBackend:
         if not parsed:
             return
         fields = parsed.get("campos_extraidos")
-        if not isinstance(fields, dict):
+        existing_fields = set()
+        if isinstance(fields, dict):
+            for field_name, field_data in fields.items():
+                existing_fields.add(self._strip_accents_casefold(str(field_name)))
+                if isinstance(field_data, dict):
+                    value = field_data.get("valor")
+                    confidence = field_data.get("confianza", field_data.get("confidence"))
+                else:
+                    value = field_data
+                    confidence = None
+                yield field_name, field_data, {
+                    "field": field_name,
+                    "value": self._redact_secret_values(value),
+                    "confidence": self._confidence_0_1(confidence),
+                    "source": self._field_source(field_name, field_data, file_record),
+                }
+        yield from self._iter_direct_audit_fields(parsed, file_record, existing_fields)
+
+    def _iter_direct_audit_fields(self, parsed: Optional[dict], file_record: dict, existing_fields: set):
+        if not isinstance(parsed, dict):
             return
-        for field_name, field_data in fields.items():
-            if isinstance(field_data, dict):
-                value = field_data.get("valor")
-                confidence = field_data.get("confianza", field_data.get("confidence"))
-            else:
-                value = field_data
-                confidence = None
+        for field_name, aliases in (
+            ("provider", ("provider", "proveedor", "razon_social_o_proveedor", "razon_social", "comercio")),
+            ("folio", ("folio", "numero_folio", "receipt_number", "numero_o_folio", "numero_boleta", "numero_documento")),
+            ("date", ("date", "fecha", "fecha_emision")),
+            ("rut", ("rut", "rut_proveedor", "rut_opcional", "tax_id")),
+            ("currency", ("currency", "moneda")),
+            ("detail", ("detail", "detalle", "items_visibles")),
+        ):
+            if field_name in existing_fields:
+                continue
+            value = self._field_value_for_aliases(parsed, aliases)
+            if value in (None, ""):
+                continue
+            confidence = parsed.get("confidence") or parsed.get("extraction_confidence")
+            field_data = {"valor": value, "confianza": confidence}
             yield field_name, field_data, {
                 "field": field_name,
                 "value": self._redact_secret_values(value),
@@ -2035,22 +2062,138 @@ class FunctionBackend:
         normalized = re.sub(r"[^a-z0-9]+", "-", normalized).strip("-")
         return normalized or "receipt"
 
-    def _stable_receipt_id(self, file_record: dict, receipt_item: dict) -> str:
+    def _scalar_from_extracted_value(self, value: Any) -> Any:
+        if isinstance(value, dict):
+            for key in ("valor", "value", "numeric_value", "name", "nombre"):
+                if value.get(key) not in (None, ""):
+                    return value.get(key)
+            return None
+        return value
+
+    def _field_value_for_aliases(self, receipt_item: dict, aliases: Tuple[str, ...]) -> Any:
+        if not isinstance(receipt_item, dict):
+            return None
+        fields = receipt_item.get("campos_extraidos")
+        if isinstance(fields, dict):
+            normalized_fields = {
+                self._strip_accents_casefold(str(key)): value
+                for key, value in fields.items()
+            }
+            for alias in aliases:
+                value = self._scalar_from_extracted_value(
+                    normalized_fields.get(self._strip_accents_casefold(alias))
+                )
+                if value not in (None, ""):
+                    return value
+        normalized_item = {
+            self._strip_accents_casefold(str(key)): value
+            for key, value in receipt_item.items()
+        }
+        for alias in aliases:
+            value = self._scalar_from_extracted_value(
+                normalized_item.get(self._strip_accents_casefold(alias))
+            )
+            if value not in (None, ""):
+                return value
+        return None
+
+    def _receipt_audit_fields(self, receipt_item: dict) -> dict:
+        audit = {}
+        for canonical_name, aliases in (
+            ("provider", ("provider", "proveedor", "razon_social_o_proveedor", "razon_social", "comercio")),
+            ("folio", ("folio", "numero_folio", "receipt_number", "numero_o_folio", "numero_boleta", "numero_documento")),
+            ("date", ("date", "fecha", "fecha_emision")),
+            ("rut", ("rut", "rut_proveedor", "rut_opcional", "tax_id")),
+            ("currency", ("currency", "moneda")),
+            ("detail", ("detail", "detalle", "items_visibles", "description")),
+        ):
+            value = self._field_value_for_aliases(receipt_item, aliases)
+            if value not in (None, ""):
+                audit[canonical_name] = self._redact_secret_values(value)
+        if "currency" not in audit:
+            for amount_key in ("monto", "amount", "monto_total", "total", "proposed_amount"):
+                amount_data = receipt_item.get(amount_key)
+                if isinstance(amount_data, dict):
+                    currency = amount_data.get("moneda") or amount_data.get("currency")
+                    if currency not in (None, ""):
+                        audit["currency"] = self._redact_secret_values(currency)
+                        break
+        return audit
+
+    def _semantic_receipt_identity(self, file_record: dict, receipt_item: dict) -> dict:
         page_metadata = self._receipt_page_metadata(receipt_item, file_record)
-        discriminator = self._normalize_receipt_discriminator(
-            self._receipt_discriminator(receipt_item)
-        )
+        audit = self._receipt_audit_fields(receipt_item)
+        amount = self._proposed_amount(self._amount_candidates(receipt_item, file_record))
+        category = self._category_candidates(receipt_item, file_record)
+        folio_value = audit.get("folio")
+        has_folio = folio_value not in (None, "") and str(folio_value).strip() != ""
         identity = {
             "source_content_sha256": self._source_content_sha256(file_record),
             "page_index": page_metadata.get("page_index"),
             "page_range": page_metadata.get("page_range"),
-            "group_label": page_metadata.get("group_label"),
-            "receipt_discriminator": discriminator,
+            "group_label": self._normalize_receipt_discriminator(page_metadata.get("group_label") or ""),
+            "provider": self._normalize_receipt_discriminator(str(audit.get("provider") or "")),
+            "folio": self._normalize_receipt_discriminator(str(folio_value or "")),
+            "date": self._normalize_receipt_discriminator(str(audit.get("date") or "")),
+            "amount": amount.get("numeric_value"),
+            "currency": self._normalize_receipt_discriminator(str(audit.get("currency") or amount.get("currency") or "")),
+            "category_id": self._normalize_receipt_discriminator(str(category.get("id") or "")),
         }
+        if not has_folio:
+            identity["receipt_discriminator"] = self._normalize_receipt_discriminator(
+                self._receipt_discriminator(receipt_item)
+            )
+        return identity
+
+    def _stable_receipt_id(self, file_record: dict, receipt_item: dict) -> str:
+        identity = self._semantic_receipt_identity(file_record, receipt_item)
         digest = hashlib.sha256(
             json.dumps(identity, sort_keys=True, ensure_ascii=False).encode("utf-8")
         ).hexdigest()
         return f"receipt_{digest[:24]}"
+
+    def _dedupe_receipts(self, receipts: List[dict]) -> List[dict]:
+        deduped = []
+        seen = set()
+        for receipt in receipts:
+            if receipt.get("parse_status") != "parsed":
+                deduped.append(receipt)
+                continue
+            source = receipt.get("source") or {}
+            audit = receipt.get("audit_fields") or {}
+            amount = receipt.get("proposed_amount") or {}
+            category = receipt.get("expense_category") or {}
+            folio_value = audit.get("folio")
+            has_folio = folio_value not in (None, "") and str(folio_value).strip() != ""
+            identity = {
+                "source_content_sha256": source.get("source_content_sha256"),
+                "page_index": (source.get("page_metadata") or {}).get("page_index"),
+                "page_range": (source.get("page_metadata") or {}).get("page_range"),
+                "group_label": self._normalize_receipt_discriminator(
+                    (source.get("page_metadata") or {}).get("group_label") or ""
+                ),
+                "provider": self._normalize_receipt_discriminator(str(audit.get("provider") or "")),
+                "folio": self._normalize_receipt_discriminator(str(folio_value or "")),
+                "date": self._normalize_receipt_discriminator(str(audit.get("date") or "")),
+                "amount": amount.get("numeric_value"),
+                "currency": self._normalize_receipt_discriminator(str(audit.get("currency") or amount.get("currency") or "")),
+                "category_id": self._normalize_receipt_discriminator(str(category.get("id") or "")),
+            }
+            if not has_folio:
+                identity["receipt_discriminator"] = self._normalize_receipt_discriminator(
+                    source.get("receipt_discriminator") or ""
+                )
+            key = json.dumps(identity, sort_keys=True, ensure_ascii=False)
+            if key in seen:
+                logger.info(
+                    "receipt_dedupe_status=duplicate_skipped receipt_id=%s source_file_uuid=%s",
+                    receipt.get("receipt_id"),
+                    source.get("file_uuid"),
+                )
+                continue
+            seen.add(key)
+            deduped.append(receipt)
+        return deduped
 
     def _receipt_items_from_parsed(self, parsed: Optional[dict]) -> Tuple[List[dict], Optional[str]]:
         if parsed is None:
@@ -2271,6 +2414,7 @@ class FunctionBackend:
         ]
         amount_candidates = self._amount_candidates(receipt_item, file_record)
         page_metadata = self._receipt_page_metadata(receipt_item, file_record)
+        audit_fields = self._receipt_audit_fields(receipt_item)
         receipt_discriminator = self._normalize_receipt_discriminator(
             self._receipt_discriminator(receipt_item)
         )
@@ -2301,6 +2445,8 @@ class FunctionBackend:
                 ),
             },
             "fields": fields,
+            "audit_fields": audit_fields,
+            **audit_fields,
             "amount_candidates": amount_candidates,
             "proposed_amount": self._proposed_amount(amount_candidates),
             "expense_category": self._category_candidates(
@@ -2344,6 +2490,7 @@ class FunctionBackend:
                     raw_content,
                     category_catalog_snapshot,
                 ))
+        receipts = self._dedupe_receipts(receipts)
 
         skipped_entries = [
             {"file_name": name, "status": "skipped", "reason": reason}
