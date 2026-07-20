@@ -1507,20 +1507,134 @@ class FunctionBackend:
             return True
         return False
 
+    def _amount_value_from_mapping(self, data: dict) -> Any:
+        for key in ("valor", "value", "numeric_value", "monto", "amount"):
+            if key in data and data.get(key) not in (None, ""):
+                return data.get(key)
+        return None
+
+    def _amount_confidence_from_mapping(self, data: dict) -> Any:
+        for key in ("confianza", "confidence", "confidence_score"):
+            if key in data:
+                return data.get(key)
+        return None
+
+    def _amount_label_from_mapping(self, fallback: str, data: dict) -> str:
+        label = (
+            data.get("campo_normalizado")
+            or data.get("etiqueta")
+            or data.get("label")
+            or data.get("field")
+            or data.get("source")
+            or fallback
+        )
+        return str(label)
+
+    def _append_amount_candidate(
+        self,
+        candidates: List[dict],
+        seen: set,
+        file_record: dict,
+        field_name: str,
+        field_data: Any,
+        value: Any,
+        confidence: Any,
+        currency: Optional[str] = None,
+        id_suffix: Optional[str] = None,
+    ) -> None:
+        if value in (None, ""):
+            return
+        if not self._is_amount_field(field_name, value):
+            return
+        normalized_value = self._redact_secret_values(value)
+        numeric_value = self._parse_numeric_value(normalized_value)
+        if numeric_value is None and isinstance(field_data, dict):
+            context = field_data.get("texto_contexto") or field_data.get("context")
+            numeric_value = self._parse_numeric_value(context)
+        candidate_id = f"{file_record.get('file_uuid')}:{id_suffix or field_name}"
+        dedupe_key = (
+            candidate_id,
+            str(normalized_value),
+            numeric_value,
+            self._strip_accents_casefold(field_name),
+        )
+        if dedupe_key in seen:
+            return
+        seen.add(dedupe_key)
+        detected_currency = (
+            currency
+            or (field_data.get("moneda") if isinstance(field_data, dict) else None)
+            or (field_data.get("currency") if isinstance(field_data, dict) else None)
+            or self._detect_currency(normalized_value)
+            or self._detect_currency(field_data.get("texto_contexto") if isinstance(field_data, dict) else None)
+        )
+        candidates.append({
+            "id": candidate_id,
+            "label": field_name,
+            "value": normalized_value,
+            "numeric_value": numeric_value,
+            "currency": detected_currency,
+            "confidence": self._confidence_0_1(confidence),
+            "source": self._field_source(field_name, field_data, file_record),
+        })
+
+    def _explicit_amount_candidates(self, parsed: Optional[dict], file_record: dict):
+        if not isinstance(parsed, dict):
+            return
+        containers = (
+            "monto", "amount", "monto_total", "total", "proposed_amount",
+            "importe", "valor_total",
+        )
+        for key in containers:
+            data = parsed.get(key)
+            if isinstance(data, dict):
+                label = self._amount_label_from_mapping(key, data)
+                yield key, label, data, self._amount_value_from_mapping(data), data
+                nested = data.get("candidatos") or data.get("candidates") or data.get("amount_candidates")
+                if isinstance(nested, list):
+                    for index, item in enumerate(nested):
+                        if not isinstance(item, dict):
+                            continue
+                        nested_label = self._amount_label_from_mapping(label, item)
+                        yield f"{key}.candidatos.{index}", nested_label, item, self._amount_value_from_mapping(item), item
+            elif data not in (None, ""):
+                yield key, key, {"valor": data}, data, {"valor": data}
+
+        for list_key in ("amount_candidates", "candidatos_monto", "monto_candidates"):
+            nested = parsed.get(list_key)
+            if not isinstance(nested, list):
+                continue
+            for index, item in enumerate(nested):
+                if not isinstance(item, dict):
+                    continue
+                label = self._amount_label_from_mapping(list_key, item)
+                yield f"{list_key}.{index}", label, item, self._amount_value_from_mapping(item), item
+
     def _amount_candidates(self, parsed: Optional[dict], file_record: dict) -> List[dict]:
         candidates = []
+        seen = set()
         for field_name, field_data, normalized in self._iter_extracted_fields(parsed, file_record) or []:
-            if not self._is_amount_field(field_name, normalized["value"]):
-                continue
-            candidates.append({
-                "id": f"{file_record.get('file_uuid')}:{field_name}",
-                "label": field_name,
-                "value": normalized["value"],
-                "numeric_value": self._parse_numeric_value(normalized["value"]),
-                "currency": self._detect_currency(normalized["value"]),
-                "confidence": normalized["confidence"],
-                "source": normalized["source"],
-            })
+            self._append_amount_candidate(
+                candidates,
+                seen,
+                file_record,
+                field_name,
+                field_data,
+                normalized["value"],
+                normalized["confidence"],
+            )
+        for id_suffix, field_name, field_data, value, confidence_source in self._explicit_amount_candidates(parsed, file_record) or []:
+            self._append_amount_candidate(
+                candidates,
+                seen,
+                file_record,
+                field_name,
+                field_data,
+                value,
+                self._amount_confidence_from_mapping(confidence_source),
+                currency=field_data.get("moneda") if isinstance(field_data, dict) else None,
+                id_suffix=id_suffix,
+            )
         return candidates
 
     def _amount_priority(self, candidate: dict) -> Tuple[int, float]:

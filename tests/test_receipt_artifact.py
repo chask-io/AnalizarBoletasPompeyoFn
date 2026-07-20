@@ -170,6 +170,80 @@ def test_proposed_amount_prefers_total_label_deterministically():
     assert receipt["expense_category"]["status"] == "unresolved"
 
 
+def test_scenario_a_synthetic_monto_shape_becomes_actionable():
+    backend = _backend()
+    parsed = json.loads((ROOT / "test_files/scenario_a_synthetic_extraction.json").read_text(encoding="utf-8"))
+    file_uuid = "14c1f293-9135-4a92-b127-cf62cb664744"
+
+    artifact = backend._build_receipt_batch_artifact(
+        {file_uuid: json.dumps(parsed)},
+        [_file(uuid=file_uuid, name="synthetic_receipt_demo_81353.png", mime="image/png")],
+        [],
+        [],
+        [],
+    )
+
+    receipt = artifact["receipts"][0]
+    assert receipt["parse_status"] == "parsed"
+    assert receipt["proposed_amount"]["numeric_value"] == 18750
+    assert receipt["proposed_amount"]["currency"] == "CLP"
+    assert receipt["proposed_amount"]["candidate_id"].endswith(":monto")
+    assert receipt["proposed_amount"]["selection_rule"] == "prefer_total_label_then_confidence"
+    assert receipt["proposed_amount"]["ambiguous"] is False
+    assert receipt["amount_candidates"][1]["source"]["context"] == "TOTAL CLP $18.750"
+
+
+def test_chilean_total_formats_normalize_to_same_integer_amount():
+    backend = _backend()
+
+    assert backend._parse_numeric_value("TOTAL CLP $18.750") == 18750
+    assert backend._parse_numeric_value("$18.750") == 18750
+    assert backend._parse_numeric_value("CLP 18.750,00") == 18750
+    assert backend._parse_numeric_value("$18,750") == 18750
+    assert backend._parse_numeric_value("18750") == 18750
+
+
+def test_explicit_malformed_amount_does_not_invent_candidate_value():
+    backend = _backend()
+    parsed = {"monto": {"valor": "valor ilegible", "confianza": 60}}
+
+    receipt = backend._receipt_entry(_file(), parsed, parsed, json.dumps(parsed))
+
+    assert receipt["proposed_amount"]["numeric_value"] is None
+    assert receipt["proposed_amount"]["selection_rule"] == "no_numeric_amount_candidate"
+
+
+def test_non_amount_identity_numbers_are_not_treated_as_amounts():
+    backend = _backend()
+    parsed = {
+        "campos_extraidos": {
+            "folio": {"valor": "18750", "confianza": 99},
+            "rut_proveedor": {"valor": "76.123.456-7", "confianza": 99},
+            "fecha_emision": {"valor": "20/07/2026", "confianza": 99},
+        }
+    }
+
+    receipt = backend._receipt_entry(_file(), parsed, parsed, json.dumps(parsed))
+
+    assert receipt["amount_candidates"] == []
+    assert receipt["proposed_amount"]["selection_rule"] == "no_numeric_amount_candidate"
+
+
+def test_multiple_total_candidates_with_close_confidence_stay_ambiguous():
+    backend = _backend()
+    parsed = {
+        "amount_candidates": [
+            {"label": "TOTAL", "value": "$18.750", "confidence": 0.95},
+            {"label": "TOTAL", "value": "$19.750", "confidence": 0.94},
+        ]
+    }
+
+    receipt = backend._receipt_entry(_file(), parsed, parsed, json.dumps(parsed))
+
+    assert receipt["proposed_amount"]["numeric_value"] == 18750
+    assert receipt["proposed_amount"]["ambiguous"] is True
+
+
 def test_two_distinct_receipts_in_one_pdf_emit_two_artifact_receipts():
     backend = _backend()
     parsed = {
