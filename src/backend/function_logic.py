@@ -2196,9 +2196,48 @@ class FunctionBackend:
         ).hexdigest()
         return f"receipt_{digest[:24]}"
 
+    def _receipt_quality_score(self, receipt: dict) -> Tuple[int, float]:
+        amount = receipt.get("proposed_amount") or {}
+        category = receipt.get("expense_category") or {}
+        audit = receipt.get("audit_fields") or {}
+        score = 0
+        if receipt.get("parse_status") == "parsed":
+            score += 10
+        if amount.get("numeric_value") is not None:
+            score += 8
+        if category.get("id") not in (None, ""):
+            score += 6
+        for key in ("provider", "folio", "date", "rut", "currency"):
+            if audit.get(key) not in (None, ""):
+                score += 1
+        confidence = receipt.get("extraction_confidence") or 0.0
+        try:
+            confidence_value = float(confidence)
+        except (TypeError, ValueError):
+            confidence_value = 0.0
+        return score, confidence_value
+
+    def _physical_receipt_dedupe_key(self, receipt: dict) -> Optional[str]:
+        source = receipt.get("source") or {}
+        audit = receipt.get("audit_fields") or {}
+        source_digest = source.get("source_content_sha256")
+        if not source_digest:
+            return None
+        page_metadata = source.get("page_metadata") or {}
+        folio_value = audit.get("folio")
+        if folio_value in (None, "") or str(folio_value).strip() == "":
+            return None
+        identity = {
+            "source_content_sha256": source_digest,
+            "page_range": page_metadata.get("page_range"),
+            "folio": self._normalize_receipt_discriminator(str(folio_value)),
+        }
+        return json.dumps(identity, sort_keys=True, ensure_ascii=False)
+
     def _dedupe_receipts(self, receipts: List[dict]) -> List[dict]:
         deduped = []
         seen = set()
+        physical_seen = {}
         for receipt in receipts:
             if receipt.get("parse_status") != "parsed":
                 deduped.append(receipt)
@@ -2228,6 +2267,25 @@ class FunctionBackend:
                     source.get("receipt_discriminator") or ""
                 )
             key = json.dumps(identity, sort_keys=True, ensure_ascii=False)
+            physical_key = self._physical_receipt_dedupe_key(receipt)
+            if physical_key and physical_key in physical_seen:
+                existing_index = physical_seen[physical_key]
+                existing = deduped[existing_index]
+                if self._receipt_quality_score(receipt) > self._receipt_quality_score(existing):
+                    logger.info(
+                        "receipt_dedupe_status=duplicate_replaced old_receipt_id=%s new_receipt_id=%s source_file_uuid=%s",
+                        existing.get("receipt_id"),
+                        receipt.get("receipt_id"),
+                        source.get("file_uuid"),
+                    )
+                    deduped[existing_index] = receipt
+                else:
+                    logger.info(
+                        "receipt_dedupe_status=physical_duplicate_skipped receipt_id=%s source_file_uuid=%s",
+                        receipt.get("receipt_id"),
+                        source.get("file_uuid"),
+                    )
+                continue
             if key in seen:
                 logger.info(
                     "receipt_dedupe_status=duplicate_skipped receipt_id=%s source_file_uuid=%s",
@@ -2236,6 +2294,8 @@ class FunctionBackend:
                 )
                 continue
             seen.add(key)
+            if physical_key:
+                physical_seen[physical_key] = len(deduped)
             deduped.append(receipt)
         return deduped
 
