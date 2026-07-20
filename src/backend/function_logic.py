@@ -322,7 +322,7 @@ def _unwrap_response(response, error_label: str) -> dict:
     """
     if not hasattr(response, "status_code"):
         return response
-    if response.status_code != 200:
+    if response.status_code not in (200, 201):
         raise RuntimeError(
             f"{error_label}: {response.status_code} {response.text}"
         )
@@ -366,6 +366,7 @@ class FunctionBackend:
 
     def __init__(self, orchestration_event: OrchestrationEvent):
         self.orchestration_event = orchestration_event
+        self._source_bytes_cache: Dict[str, bytes] = {}
         logger.info(
             f"Initialized FunctionBackend for org: "
             f"{orchestration_event.organization.organization_id}"
@@ -380,6 +381,10 @@ class FunctionBackend:
 
         file_uuids = tool_args.get("file_uuids")
         node_id = tool_args.get("node_id", "")
+        category_catalog_snapshot = self._parse_category_catalog_snapshot(
+            tool_args.get("category_catalog_snapshot")
+            or (self.orchestration_event.extra_params or {}).get("category_catalog_snapshot")
+        )
 
         extra_params = self.orchestration_event.extra_params or {}
         logger.info(
@@ -402,7 +407,8 @@ class FunctionBackend:
         if not pdf_files and not image_files and not docx_files:
             report = self._build_processing_report(pdf_files, image_files, docx_files, skipped)
             return self._build_final_response(
-                {}, pdf_files, image_files, docx_files, skipped, report
+                {}, pdf_files, image_files, docx_files, skipped, report,
+                category_catalog_snapshot,
             )
 
         logger.info(
@@ -441,7 +447,8 @@ class FunctionBackend:
             # 6. Build final response
             report = self._build_processing_report(pdf_files, image_files, docx_files, skipped)
             return self._build_final_response(
-                results, pdf_files, image_files, docx_files, skipped, report
+                results, pdf_files, image_files, docx_files, skipped, report,
+                category_catalog_snapshot,
             )
 
         finally:
@@ -914,14 +921,9 @@ class FunctionBackend:
         if not file_url:
             return 0, [], None
         try:
-            import requests
             import pypdfium2 as pdfium
 
-            resp = requests.get(file_url, timeout=30)
-            if resp.status_code != 200:
-                logger.warning(f"Could not download PDF for page analysis: HTTP {resp.status_code}")
-                return 0, [], None
-            pdf_bytes = resp.content
+            pdf_bytes = self._get_source_bytes(file_record)
 
             with _PDFIUM_LOCK:
                 doc = pdfium.PdfDocument(pdf_bytes)
@@ -1099,7 +1101,6 @@ class FunctionBackend:
     # ─────────────────────────────────────────────────────────────────────────
 
     def _process_single_image(self, llm_client: Any, file_record: dict, prompt: str) -> str:
-        import requests
         from PIL import Image
 
         file_uuid = file_record["file_uuid"]
@@ -1112,10 +1113,8 @@ class FunctionBackend:
             return f"Error: No se encontró URL para la imagen '{file_name}'"
 
         try:
-            image_response = requests.get(image_url, timeout=30)
-            if image_response.status_code != 200:
-                return f"Error descargando imagen '{file_name}': HTTP {image_response.status_code}"
-            pil_image = Image.open(io.BytesIO(image_response.content))
+            image_bytes = self._get_source_bytes(file_record)
+            pil_image = Image.open(io.BytesIO(image_bytes))
             pil_image = self._orient_upright(pil_image, file_name)
             image_part = self._pil_image_part(pil_image)
         except Exception as e:
@@ -1199,7 +1198,6 @@ class FunctionBackend:
         """Process a DOCX file: extract text and embedded images, send to LLM."""
         import io
         import zipfile
-        import requests
 
         file_uuid = file_record["file_uuid"]
         file_name = file_record.get("file_name", file_uuid)
@@ -1210,13 +1208,9 @@ class FunctionBackend:
         if not file_url:
             return f"Error: No se encontró URL para el documento '{file_name}'"
 
-        # Download DOCX
-        response = requests.get(file_url, timeout=30)
-        if response.status_code != 200:
-            return f"Error descargando DOCX '{file_name}': HTTP {response.status_code}"
-
         try:
-            zf = zipfile.ZipFile(io.BytesIO(response.content))
+            docx_bytes = self._get_source_bytes(file_record)
+            zf = zipfile.ZipFile(io.BytesIO(docx_bytes))
         except zipfile.BadZipFile:
             return f"Error: El archivo '{file_name}' no es un DOCX válido"
 
@@ -1339,8 +1333,33 @@ class FunctionBackend:
         normalize_financial_candidates(parsed)
         return parsed
 
-    def _source_hash(self, file_record: dict) -> str:
-        """Stable metadata hash. It avoids downloading content or exposing URLs."""
+    def _get_source_bytes(self, file_record: dict) -> bytes:
+        file_uuid = file_record.get("file_uuid") or file_record.get("uuid")
+        if not file_uuid:
+            raise ValueError("File record is missing file_uuid")
+        if "content_bytes" in file_record:
+            content = file_record["content_bytes"]
+            if isinstance(content, str):
+                content = content.encode("utf-8")
+            self._source_bytes_cache[file_uuid] = bytes(content)
+            return self._source_bytes_cache[file_uuid]
+        cached = self._source_bytes_cache.get(file_uuid)
+        if cached is not None:
+            return cached
+        file_url = file_record.get("file_url", "")
+        if not file_url:
+            raise ValueError(f"No source URL available for file {file_uuid}")
+        import requests
+        response = requests.get(file_url, timeout=30)
+        if response.status_code != 200:
+            raise RuntimeError(
+                f"Could not download source bytes for file {file_uuid}: HTTP {response.status_code}"
+            )
+        self._source_bytes_cache[file_uuid] = response.content
+        return response.content
+
+    def _metadata_hash(self, file_record: dict) -> str:
+        """Stable metadata hash. It avoids exposing URLs and is not idempotency input."""
         identity = {
             "file_uuid": file_record.get("file_uuid"),
             "file_name": file_record.get("file_name"),
@@ -1349,6 +1368,17 @@ class FunctionBackend:
         }
         payload = json.dumps(identity, sort_keys=True, ensure_ascii=False)
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    def _source_content_sha256(self, file_record: dict) -> Optional[str]:
+        try:
+            return hashlib.sha256(self._get_source_bytes(file_record)).hexdigest()
+        except Exception as exc:
+            logger.warning(
+                "source_content_hash_status=unavailable file_uuid=%s error=%s",
+                file_record.get("file_uuid"),
+                exc,
+            )
+            return None
 
     def _file_kind(self, file_record: dict) -> str:
         if self._is_pdf(file_record):
@@ -1373,11 +1403,15 @@ class FunctionBackend:
             "mime_type": file_record.get("mime_type") or file_record.get("content_type"),
             "kind": self._file_kind(file_record),
             "status": status,
-            "source_hash": self._source_hash(file_record),
-            "source_hash_algorithm": "sha256(file_uuid|file_name|mime_type|size)",
+            "source_content_sha256": self._source_content_sha256(file_record),
+            "source_content_hash_algorithm": "sha256(source_bytes)",
+            "source_metadata_sha256": self._metadata_hash(file_record),
+            "source_metadata_hash_algorithm": "sha256(file_uuid|file_name|mime_type|size)",
             "page_metadata": {
                 "known_total_pages": file_record.get("page_count"),
                 "processed_pages": file_record.get("processed_pages"),
+                "page_index": file_record.get("page_index"),
+                "page_range": file_record.get("page_range"),
             },
         }
         if reason:
@@ -1421,7 +1455,8 @@ class FunctionBackend:
         source = {
             "file_uuid": file_record.get("file_uuid"),
             "file_name": file_record.get("file_name"),
-            "source_hash": self._source_hash(file_record),
+            "source_content_sha256": self._source_content_sha256(file_record),
+            "source_metadata_sha256": self._metadata_hash(file_record),
             "field": field_name,
         }
         if isinstance(field_data, dict):
@@ -1433,8 +1468,14 @@ class FunctionBackend:
             )
             if page is not None:
                 source["page"] = page
+                source["page_metadata"] = {"page_index": page, "page_range": [page, page]}
             if field_data.get("texto_contexto"):
                 source["context"] = field_data.get("texto_contexto")
+        if "page_metadata" not in source:
+            source["page_metadata"] = {
+                "page_index": file_record.get("page_index"),
+                "page_range": file_record.get("page_range"),
+            }
         return source
 
     def _iter_extracted_fields(self, parsed: Optional[dict], file_record: dict):
@@ -1484,6 +1525,54 @@ class FunctionBackend:
             })
         return candidates
 
+    def _amount_priority(self, candidate: dict) -> Tuple[int, float]:
+        label = self._strip_accents_casefold(str(candidate.get("label", "")))
+        priority = 0
+        if "total" in label or "monto_total" in label or "monto total" in label:
+            priority = 4
+        elif "iva" in label or "neto" in label or "subtotal" in label:
+            priority = 2
+        elif any(token in label for token in ("monto", "valor", "pago")):
+            priority = 3
+        confidence = float(candidate.get("confidence") or 0)
+        return priority, confidence
+
+    def _proposed_amount(self, amount_candidates: List[dict]) -> dict:
+        valid = [
+            candidate for candidate in amount_candidates
+            if candidate.get("numeric_value") is not None
+        ]
+        if not valid:
+            return {
+                "value": None,
+                "numeric_value": None,
+                "currency": None,
+                "confidence": 0.0,
+                "source": None,
+                "candidate_id": None,
+                "ambiguous": True,
+                "selection_rule": "no_numeric_amount_candidate",
+            }
+        ordered = sorted(valid, key=self._amount_priority, reverse=True)
+        top = ordered[0]
+        runner_up = ordered[1] if len(ordered) > 1 else None
+        ambiguous = False
+        if runner_up is not None:
+            same_priority = self._amount_priority(top)[0] == self._amount_priority(runner_up)[0]
+            close_confidence = abs((top.get("confidence") or 0) - (runner_up.get("confidence") or 0)) < 0.15
+            different_value = top.get("numeric_value") != runner_up.get("numeric_value")
+            ambiguous = same_priority and close_confidence and different_value
+        return {
+            "value": top.get("value"),
+            "numeric_value": top.get("numeric_value"),
+            "currency": top.get("currency"),
+            "confidence": top.get("confidence", 0.0),
+            "source": top.get("source"),
+            "candidate_id": top.get("id"),
+            "ambiguous": ambiguous,
+            "selection_rule": "prefer_total_label_then_confidence",
+        }
+
     def _detect_currency(self, value: Any) -> Optional[str]:
         if not isinstance(value, str):
             return None
@@ -1496,17 +1585,70 @@ class FunctionBackend:
             return "CLP"
         return None
 
-    def _category_catalog(self) -> List[dict]:
-        return [
-            {"id": "fuel", "name": "Combustible", "keywords": ("bencina", "combustible", "copec", "shell", "petrobras", "terpel")},
-            {"id": "parking_tolls", "name": "Estacionamiento y peajes", "keywords": ("estacionamiento", "parking", "peaje", "tag", "autopista")},
-            {"id": "meals", "name": "Alimentacion", "keywords": ("restaurant", "restaurante", "cafeteria", "almuerzo", "comida", "casino", "delivery")},
-            {"id": "office_supplies", "name": "Insumos de oficina", "keywords": ("libreria", "papeleria", "oficina", "toner", "resma")},
-            {"id": "maintenance", "name": "Mantencion y reparaciones", "keywords": ("mantencion", "reparacion", "repuesto", "servicio tecnico", "lubricante")},
-            {"id": "lodging", "name": "Alojamiento", "keywords": ("hotel", "hostal", "alojamiento", "hospedaje")},
-            {"id": "transport", "name": "Transporte", "keywords": ("taxi", "uber", "cabify", "bus", "metro", "pasaje")},
-            {"id": "other", "name": "Otro gasto", "keywords": ()},
-        ]
+    def _parse_category_catalog_snapshot(self, raw_snapshot: Any) -> dict:
+        """Parse an injected, versioned ROMA category snapshot.
+
+        Until a safe read-only discovery step provides this snapshot, category
+        IDs are intentionally unresolved so downstream stages cannot treat
+        guessed IDs as authoritative ROMA IDs.
+        """
+        if raw_snapshot in (None, "", {}):
+            return {
+                "status": "unresolved",
+                "version": None,
+                "source": "not_provided",
+                "categories": [],
+            }
+        if isinstance(raw_snapshot, str):
+            try:
+                raw_snapshot = json.loads(raw_snapshot)
+            except json.JSONDecodeError:
+                return {
+                    "status": "unresolved",
+                    "version": None,
+                    "source": "invalid_json",
+                    "categories": [],
+                }
+        if not isinstance(raw_snapshot, dict):
+            return {
+                "status": "unresolved",
+                "version": None,
+                "source": "invalid_type",
+                "categories": [],
+            }
+        categories = raw_snapshot.get("categories")
+        version = raw_snapshot.get("version")
+        source = raw_snapshot.get("source", "injected_snapshot")
+        if not version or not isinstance(categories, list):
+            return {
+                "status": "unresolved",
+                "version": version,
+                "source": source,
+                "categories": [],
+            }
+        normalized = []
+        for category in categories:
+            if not isinstance(category, dict):
+                continue
+            category_id = category.get("id")
+            name = category.get("name")
+            if category_id is None or not name:
+                continue
+            keywords = category.get("keywords") or category.get("aliases") or []
+            if isinstance(keywords, str):
+                keywords = [keywords]
+            normalized.append({
+                "id": str(category_id),
+                "name": str(name),
+                "keywords": [str(keyword) for keyword in keywords],
+            })
+        status = "resolved" if normalized else "unresolved"
+        return {
+            "status": status,
+            "version": str(version),
+            "source": str(source),
+            "categories": normalized,
+        }
 
     def _category_text(self, parsed: Optional[dict]) -> str:
         if not parsed:
@@ -1527,53 +1669,102 @@ class FunctionBackend:
                     parts.append(str(field_data))
         return self._strip_accents_casefold(" ".join(parts))
 
-    def _category_candidates(self, parsed: Optional[dict], file_record: dict) -> dict:
+    def _category_candidates(
+        self,
+        parsed: Optional[dict],
+        file_record: dict,
+        category_catalog_snapshot: Optional[dict] = None,
+    ) -> dict:
+        snapshot = category_catalog_snapshot or self._parse_category_catalog_snapshot(None)
+        if snapshot.get("status") != "resolved":
+            return {
+                "id": None,
+                "name": None,
+                "status": "unresolved",
+                "catalog": {
+                    "status": snapshot.get("status", "unresolved"),
+                    "version": snapshot.get("version"),
+                    "source": snapshot.get("source", "not_provided"),
+                },
+                "source": {
+                    "type": "catalog_unresolved",
+                    "file_uuid": file_record.get("file_uuid"),
+                    "source_content_sha256": self._source_content_sha256(file_record),
+                },
+                "confidence": 0.0,
+                "candidates": [],
+                "ambiguous": True,
+            }
         text = self._category_text(parsed)
         candidates = []
-        for category in self._category_catalog():
+        for category in snapshot.get("categories", []):
             hits = [kw for kw in category["keywords"] if self._strip_accents_casefold(kw) in text]
-            if category["id"] == "other":
-                score = 0.2 if not candidates else 0.05
-            else:
-                score = min(0.95, 0.35 + (0.2 * len(hits))) if hits else 0.0
+            score = min(0.95, 0.35 + (0.2 * len(hits))) if hits else 0.0
             if score <= 0:
                 continue
             candidates.append({
                 "id": category["id"],
                 "name": category["name"],
                 "source": {
-                    "type": "keyword",
+                    "type": "injected_snapshot_keyword",
+                    "catalog_version": snapshot.get("version"),
+                    "catalog_source": snapshot.get("source"),
                     "matched_terms": hits,
                     "file_uuid": file_record.get("file_uuid"),
-                    "source_hash": self._source_hash(file_record),
+                    "source_content_sha256": self._source_content_sha256(file_record),
                 },
                 "confidence": round(score, 4),
             })
         candidates.sort(key=lambda item: item["confidence"], reverse=True)
         if not candidates:
-            candidates = [{
-                "id": "other",
-                "name": "Otro gasto",
-                "source": {"type": "fallback", "file_uuid": file_record.get("file_uuid"), "source_hash": self._source_hash(file_record)},
-                "confidence": 0.2,
-            }]
+            return {
+                "id": None,
+                "name": None,
+                "status": "unmatched",
+                "catalog": {
+                    "status": snapshot.get("status"),
+                    "version": snapshot.get("version"),
+                    "source": snapshot.get("source"),
+                },
+                "source": {
+                    "type": "no_snapshot_keyword_match",
+                    "file_uuid": file_record.get("file_uuid"),
+                    "source_content_sha256": self._source_content_sha256(file_record),
+                },
+                "confidence": 0.0,
+                "candidates": [],
+                "ambiguous": True,
+            }
         top = candidates[0]
         runner_up = candidates[1] if len(candidates) > 1 else None
         ambiguous = runner_up is not None and (top["confidence"] - runner_up["confidence"]) < 0.2
         return {
             "id": top["id"],
             "name": top["name"],
+            "status": "resolved",
+            "catalog": {
+                "status": snapshot.get("status"),
+                "version": snapshot.get("version"),
+                "source": snapshot.get("source"),
+            },
             "source": top["source"],
             "confidence": top["confidence"],
             "candidates": candidates,
             "ambiguous": ambiguous,
         }
 
-    def _receipt_entry(self, file_record: dict, parsed: Optional[dict], raw_content: str) -> dict:
+    def _receipt_entry(
+        self,
+        file_record: dict,
+        parsed: Optional[dict],
+        raw_content: str,
+        category_catalog_snapshot: Optional[dict] = None,
+    ) -> dict:
         fields = [
             normalized
             for _, _, normalized in (self._iter_extracted_fields(parsed, file_record) or [])
         ]
+        amount_candidates = self._amount_candidates(parsed, file_record)
         parse_error = None if parsed is not None else "malformed_or_non_json_extraction"
         return {
             "receipt_id": file_record.get("file_uuid"),
@@ -1587,8 +1778,11 @@ class FunctionBackend:
                 "raw_preview": self._redact_secret_values(raw_content[:1200] if isinstance(raw_content, str) else str(raw_content)[:1200]),
             },
             "fields": fields,
-            "amount_candidates": self._amount_candidates(parsed, file_record),
-            "expense_category": self._category_candidates(parsed, file_record),
+            "amount_candidates": amount_candidates,
+            "proposed_amount": self._proposed_amount(amount_candidates),
+            "expense_category": self._category_candidates(
+                parsed, file_record, category_catalog_snapshot
+            ),
             "extraction_confidence": self._confidence_0_1((parsed or {}).get("extraction_confidence")),
         }
 
@@ -1599,13 +1793,16 @@ class FunctionBackend:
         image_files: List[dict],
         docx_files: List[dict],
         skipped: List[Tuple[str, str]],
+        category_catalog_snapshot: Optional[dict] = None,
     ) -> dict:
         processed = pdf_files + docx_files + image_files
         receipts = []
         for file_record in processed:
             raw_content = results.get(file_record.get("file_uuid"), "Sin resultado")
             parsed = self._parse_extraction_content(raw_content, file_record.get("file_name", "?"))
-            receipts.append(self._receipt_entry(file_record, parsed, raw_content))
+            receipts.append(self._receipt_entry(
+                file_record, parsed, raw_content, category_catalog_snapshot
+            ))
 
         skipped_entries = [
             {"file_name": name, "status": "skipped", "reason": reason}
@@ -1632,12 +1829,42 @@ class FunctionBackend:
                 "processed_count": len(processed),
                 "skipped_count": len(skipped),
             },
+            "category_catalog": {
+                "status": (category_catalog_snapshot or {}).get("status", "unresolved"),
+                "version": (category_catalog_snapshot or {}).get("version"),
+                "source": (category_catalog_snapshot or {}).get("source", "not_provided"),
+            },
             "attachment_inventory": [
                 self._inventory_entry(file_record) for file_record in processed
             ] + skipped_entries,
             "receipts": receipts,
         }
         return self._redact_secret_values(artifact)
+
+    def _upload_receipt_batch_artifact(self, artifact: dict) -> str:
+        content = json.dumps(artifact, ensure_ascii=False, indent=2).encode("utf-8")
+        file_obj = io.BytesIO(content)
+        file_obj.name = "pompeyo_receipt_batch.json"
+        response = files_api_manager.call(
+            "upload_file",
+            file=file_obj,
+            orchestration_session_uuid=self.orchestration_event.orchestration_session_uuid,
+            internal_orchestration_session_uuid=self.orchestration_event.internal_orchestration_session_uuid,
+            access_token=self.orchestration_event.access_token,
+            organization_id=self.orchestration_event.organization.organization_id,
+        )
+        upload_data = _unwrap_response(response, "Failed to upload receipt batch artifact")
+        for key in ("file_uuid", "uuid", "attachment_uuid", "id"):
+            value = upload_data.get(key)
+            if value:
+                return str(value)
+        file_data = upload_data.get("file")
+        if isinstance(file_data, dict):
+            for key in ("file_uuid", "uuid", "attachment_uuid", "id"):
+                value = file_data.get(key)
+                if value:
+                    return str(value)
+        raise RuntimeError("Upload response did not include a file UUID")
 
     def _apply_rut_dv_check(self, parsed: dict) -> None:
         """Lower confidence of RUT/RUN fields whose check digit fails módulo-11."""
@@ -1730,10 +1957,13 @@ class FunctionBackend:
         docx_files: List[dict],
         skipped: List[Tuple[str, str]],
         report: str,
+        category_catalog_snapshot: Optional[dict] = None,
     ) -> str:
         artifact = self._build_receipt_batch_artifact(
-            results, pdf_files, image_files, docx_files, skipped
+            results, pdf_files, image_files, docx_files, skipped,
+            category_catalog_snapshot,
         )
+        ready_receipts_uuid = self._upload_receipt_batch_artifact(artifact)
         sections = []
 
         # PDF results
@@ -1759,16 +1989,30 @@ class FunctionBackend:
 
         analysis = "\n\n".join(sections)
 
+        response_payload = {
+            "ready_receipts_uuid": ready_receipts_uuid,
+            "schema_version": artifact["schema_version"],
+            "batch": artifact["batch"],
+            "category_catalog": artifact["category_catalog"],
+            "summary": {
+                "processed_count": artifact["batch"]["processed_count"],
+                "skipped_count": artifact["batch"]["skipped_count"],
+                "missing_attachments": artifact["batch"]["missing_attachments"],
+                "receipt_count": len(artifact["receipts"]),
+            },
+        }
+        human_summary = (
+            f"Batch de boletas listo: ready_receipts_uuid={ready_receipts_uuid}. "
+            f"Procesados={artifact['batch']['processed_count']}, "
+            f"omitidos={artifact['batch']['skipped_count']}, "
+            f"categorias={artifact['category_catalog']['status']}."
+        )
+        if analysis:
+            logger.info("receipt_batch_detail_sections=%s", len(sections))
+        logger.info("receipt_batch_processing_report=%s", report)
         return (
-            f"Artefacto batch de boletas Pompeyo:\n"
-            f"{'=' * 50}\n\n"
-            f"```json\n{json.dumps(artifact, ensure_ascii=False, indent=2)}\n```\n\n"
-            f"{'=' * 50}\n"
-            f"Detalle OCR por archivo:\n\n"
-            f"{analysis}\n\n"
-            f"{'=' * 50}\n"
-            f"RESUMEN DE PROCESAMIENTO:\n"
-            f"{report}"
+            f"{json.dumps(response_payload, ensure_ascii=False)}\n\n"
+            f"{human_summary}"
         )
 
     # ─────────────────────────────────────────────────────────────────────────

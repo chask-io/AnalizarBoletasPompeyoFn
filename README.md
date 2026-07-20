@@ -27,14 +27,16 @@ This is a Chask organization-specific Lambda function deployed from GitHub.
 
 ## Output Contract
 
-La respuesta empieza con un JSON `pompeyo.receipt_batch.v1` que incluye:
+La función sube un JSON `pompeyo.receipt_batch.v1` a los archivos de la sesión y retorna `ready_receipts_uuid` junto con metadata batch.
 
 - `attachment_inventory`: identidad estable, hash determinístico de metadata, tipo y estado de cada adjunto.
+- `receipts[].source.source_content_sha256`: digest sha256 del contenido real del adjunto, usado para idempotencia.
 - `receipts`: OCR/extracción por archivo, campos normalizados, candidatos de montos y categoría de gasto.
-- `expense_category`: objeto con `id`, `name`, `source`, `confidence`, `candidates` y `ambiguous`.
+- `proposed_amount`: monto determinístico propuesto a partir de candidatos, sin decidir aprobación.
+- `expense_category`: objeto con `id`, `name`, `status`, `catalog`, `source`, `confidence`, `candidates` y `ambiguous`.
 - `confidence_scale`: documenta que toda confianza se normaliza a rango `0..1`.
 
-La función no escribe en ROMA, no aprueba, no rechaza y redacta patrones de secretos antes de devolver el artefacto.
+Las categorías requieren un snapshot ROMA versionado inyectado en `category_catalog_snapshot`. Si falta, quedan `status=unresolved`, `id=null`, `ambiguous=true`; la función no inventa IDs. La función no escribe en ROMA, no aprueba, no rechaza y redacta patrones de secretos antes de subir el artefacto.
 
 ## Project Structure
 
