@@ -2125,19 +2125,21 @@ class FunctionBackend:
         audit = self._receipt_audit_fields(receipt_item)
         amount = self._proposed_amount(self._amount_candidates(receipt_item, file_record))
         category = self._category_candidates(receipt_item, file_record)
+        folio_value = audit.get("folio")
+        has_folio = folio_value not in (None, "") and str(folio_value).strip() != ""
         identity = {
             "source_content_sha256": self._source_content_sha256(file_record),
             "page_index": page_metadata.get("page_index"),
             "page_range": page_metadata.get("page_range"),
             "group_label": self._normalize_receipt_discriminator(page_metadata.get("group_label") or ""),
             "provider": self._normalize_receipt_discriminator(str(audit.get("provider") or "")),
-            "folio": self._normalize_receipt_discriminator(str(audit.get("folio") or "")),
+            "folio": self._normalize_receipt_discriminator(str(folio_value or "")),
             "date": self._normalize_receipt_discriminator(str(audit.get("date") or "")),
             "amount": amount.get("numeric_value"),
             "currency": self._normalize_receipt_discriminator(str(audit.get("currency") or amount.get("currency") or "")),
             "category_id": self._normalize_receipt_discriminator(str(category.get("id") or "")),
         }
-        if not identity["folio"]:
+        if not has_folio:
             identity["receipt_discriminator"] = self._normalize_receipt_discriminator(
                 self._receipt_discriminator(receipt_item)
             )
@@ -2161,7 +2163,9 @@ class FunctionBackend:
             audit = receipt.get("audit_fields") or {}
             amount = receipt.get("proposed_amount") or {}
             category = receipt.get("expense_category") or {}
-            key = json.dumps({
+            folio_value = audit.get("folio")
+            has_folio = folio_value not in (None, "") and str(folio_value).strip() != ""
+            identity = {
                 "source_content_sha256": source.get("source_content_sha256"),
                 "page_index": (source.get("page_metadata") or {}).get("page_index"),
                 "page_range": (source.get("page_metadata") or {}).get("page_range"),
@@ -2169,12 +2173,17 @@ class FunctionBackend:
                     (source.get("page_metadata") or {}).get("group_label") or ""
                 ),
                 "provider": self._normalize_receipt_discriminator(str(audit.get("provider") or "")),
-                "folio": self._normalize_receipt_discriminator(str(audit.get("folio") or "")),
+                "folio": self._normalize_receipt_discriminator(str(folio_value or "")),
                 "date": self._normalize_receipt_discriminator(str(audit.get("date") or "")),
                 "amount": amount.get("numeric_value"),
                 "currency": self._normalize_receipt_discriminator(str(audit.get("currency") or amount.get("currency") or "")),
                 "category_id": self._normalize_receipt_discriminator(str(category.get("id") or "")),
-            }, sort_keys=True, ensure_ascii=False)
+            }
+            if not has_folio:
+                identity["receipt_discriminator"] = self._normalize_receipt_discriminator(
+                    source.get("receipt_discriminator") or ""
+                )
+            key = json.dumps(identity, sort_keys=True, ensure_ascii=False)
             if key in seen:
                 logger.info(
                     "receipt_dedupe_status=duplicate_skipped receipt_id=%s source_file_uuid=%s",

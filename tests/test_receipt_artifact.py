@@ -531,6 +531,51 @@ def test_two_distinct_receipts_in_one_pdf_emit_two_artifact_receipts():
     assert artifact["receipts"][1]["proposed_amount"]["numeric_value"] == 20000
 
 
+def test_no_folio_same_page_receipts_with_distinct_discriminators_remain_two():
+    backend = _backend()
+    parsed = {
+        "receipts": [
+            {
+                "receipt_discriminator": "mesa 12 venta tarjeta",
+                "page_metadata": {"page_index": 1, "page_range": [1, 1]},
+                "campos_extraidos": {
+                    "proveedor": {"valor": "RESTAURANTE DEMO", "confianza": 95, "pagina": 1},
+                    "fecha": {"valor": "2026-07-20", "confianza": 95, "pagina": 1},
+                    "monto_total": {"valor": "$10.000", "confianza": 90, "pagina": 1},
+                },
+                "categoria_propuesta": {"id": "ALIMENTACION", "name": "Alimentacion"},
+                "extraction_confidence": 90,
+            },
+            {
+                "receipt_discriminator": "mesa 14 venta efectivo",
+                "page_metadata": {"page_index": 1, "page_range": [1, 1]},
+                "campos_extraidos": {
+                    "proveedor": {"valor": "RESTAURANTE DEMO", "confianza": 95, "pagina": 1},
+                    "fecha": {"valor": "2026-07-20", "confianza": 95, "pagina": 1},
+                    "monto_total": {"valor": "$10.000", "confianza": 90, "pagina": 1},
+                },
+                "categoria_propuesta": {"id": "ALIMENTACION", "name": "Alimentacion"},
+                "extraction_confidence": 90,
+            },
+        ]
+    }
+
+    artifact = backend._build_receipt_batch_artifact(
+        {"file-1": json.dumps(parsed)},
+        [_file(name="same-page-no-folio.pdf")],
+        [],
+        [],
+        [],
+    )
+
+    assert len(artifact["receipts"]) == 2
+    assert artifact["receipts"][0]["receipt_id"] != artifact["receipts"][1]["receipt_id"]
+    assert [
+        receipt["source"]["receipt_discriminator"]
+        for receipt in artifact["receipts"]
+    ] == ["mesa-12-venta-tarjeta", "mesa-14-venta-efectivo"]
+
+
 def test_one_receipt_can_span_two_pdf_pages():
     backend = _backend()
     parsed = {
