@@ -1,0 +1,16 @@
+{
+  "function_name": "AnalizarBoletasPompeyoFn",
+  "args": {
+    "analysis_prompt": "Analiza boletas y comprobantes disponibles, extrayendo montos y categorias candidatas sin decidir aprobacion.",
+    "file_uuids": "all"
+  },
+  "widget_params": {},
+  "prompt": "",
+  "event_type": "function_call",
+  "extra_params": {},
+  "files": [],
+  "metadata": {
+    "description": "Basic test for AnalizarBoletasPompeyoFn",
+    "expected_status": "success"
+  }
+}

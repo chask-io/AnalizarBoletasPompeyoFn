@@ -1,0 +1,18 @@
+{
+  "function_name": "AnalizarBoletasPompeyoFn",
+  "test_type": "operator_params",
+  "args": {
+    "analysis_prompt": "Extrae proveedor, RUT, folio, fecha, montos, texto OCR y categorías candidatas de todos los comprobantes.",
+    "file_uuids": "all"
+  },
+  "prompt": "Necesito que analices todas las boletas o comprobantes disponibles en la sesión y devuelvas un batch auditable con montos y categorías candidatas, sin aprobar ni escribir en ROMA.",
+  "event_type": "function_call",
+  "extra_params": {
+    "is_operator_params_test": true
+  },
+  "files": [],
+  "metadata": {
+    "description": "Operator LLM generates receipt-analysis params from natural language prompt",
+    "expected_status": "success"
+  }
+}

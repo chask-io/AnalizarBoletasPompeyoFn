@@ -1,0 +1,17 @@
+{
+  "function_name": "AnalizarBoletasPompeyoFn",
+  "test_type": "provided_params",
+  "args": {
+    "analysis_prompt": "Analiza todas las boletas disponibles. Extrae proveedor, RUT, folio, fecha, montos neto/IVA/total, texto OCR relevante y posibles categorías de gasto. No escribas en ROMA ni decidas aprobación.",
+    "file_uuids": "all"
+  },
+  "widget_params": {},
+  "prompt": "",
+  "event_type": "function_call",
+  "extra_params": {},
+  "files": [],
+  "metadata": {
+    "description": "Provided params validate empty-session handling with the receipt batch artifact contract",
+    "expected_status": "success"
+  }
+}

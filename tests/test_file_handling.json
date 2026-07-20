@@ -1,0 +1,16 @@
+{
+  "function_name": "AnalizarBoletasPompeyoFn",
+  "test_type": "file_handling",
+  "args": {
+    "analysis_prompt": "Analiza esta boleta PDF. Extrae proveedor, RUT, folio, fecha, montos neto/IVA/total, texto OCR relevante y posibles categorías de gasto. Devuelve candidatos y ambigüedades."
+  },
+  "widget_params": {},
+  "prompt": "",
+  "event_type": "function_call",
+  "extra_params": {},
+  "files": ["test_files/factura_ejemplo.pdf"],
+  "metadata": {
+    "description": "Test PDF receipt extraction and batch artifact generation",
+    "expected_status": "success"
+  }
+}
